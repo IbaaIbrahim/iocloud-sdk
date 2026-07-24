@@ -26,6 +26,38 @@ class PartnerToken:
 
 
 @dataclass(frozen=True, slots=True)
+class TenantToken:
+    access_token: str
+    token_type: str
+    expires_at: datetime
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "TenantToken":
+        return cls(
+            access_token=str(payload["access_token"]),
+            token_type=str(payload["token_type"]),
+            expires_at=_datetime(payload["expires_at"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TenantCredential:
+    credential_uuid: UUID
+    tenant_uuid: UUID
+    client_id: str
+    client_secret: str
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "TenantCredential":
+        return cls(
+            credential_uuid=UUID(str(payload["credential_uuid"])),
+            tenant_uuid=UUID(str(payload["tenant_uuid"])),
+            client_id=str(payload["client_id"]),
+            client_secret=str(payload["client_secret"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Tenant:
     uuid: UUID
     application_uuid: UUID

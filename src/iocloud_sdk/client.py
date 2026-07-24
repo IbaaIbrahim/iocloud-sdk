@@ -5,7 +5,13 @@ from uuid import UUID
 import httpx
 
 from .exceptions import IOCloudAPIError, IOCloudAuthenticationError
-from .models import ExternalTenantMapping, PartnerToken, Tenant
+from .models import (
+    ExternalTenantMapping,
+    PartnerToken,
+    Tenant,
+    TenantCredential,
+    TenantToken,
+)
 
 
 class IOCloudClient:
@@ -33,6 +39,7 @@ class IOCloudClient:
         self._http = http_client or httpx.Client(timeout=timeout)
         self._owns_http_client = http_client is None
         self._partner_token: PartnerToken | None = None
+        self._tenant_tokens: dict[str, TenantToken] = {}
 
     def __enter__(self) -> "IOCloudClient":
         return self
@@ -117,6 +124,84 @@ class IOCloudClient:
             data = self._partner_request("POST", path, json=body)
         return ExternalTenantMapping.from_payload(data["mapping"])
 
+    def create_tenant_credentials(
+        self,
+        *,
+        tenant_uuid: UUID | str,
+        name: str = "realestate-persona-sync",
+    ) -> TenantCredential:
+        """Issue a client_id/client_secret pair for a tenant owned by the partner.
+
+        The ``client_secret`` is returned exactly once, at creation; the caller
+        must persist it to issue tenant tokens later.
+        """
+        data = self._partner_request(
+            "POST",
+            f"/v1/partner/tenants/{tenant_uuid}/credentials",
+            json={"name": name},
+        )
+        return TenantCredential.from_payload(data["credential"])
+
+    def issue_tenant_token(
+        self,
+        *,
+        client_id: str,
+        client_secret: str,
+        force_refresh: bool = False,
+    ) -> TenantToken:
+        """Exchange tenant client credentials for a tenant token and cache it."""
+        cached = self._tenant_tokens.get(client_id)
+        if not force_refresh and self._token_is_fresh(cached):
+            assert cached is not None
+            return cached
+
+        data = self._request(
+            "POST",
+            "/v1/tenant/auth/token",
+            json={"client_id": client_id, "client_secret": client_secret},
+        )
+        token = TenantToken.from_payload(data["token"])
+        self._tenant_tokens[client_id] = token
+        return token
+
+    def set_user_persona(
+        self,
+        *,
+        user_uuid: UUID | str,
+        persona: str,
+        tenant_client_id: str,
+        tenant_client_secret: str,
+    ) -> dict[str, Any]:
+        """Persist a tenant user's onboarding persona via a tenant token.
+
+        Uses the tenant credentials to obtain a tenant token, then PATCHes the
+        user's persona. Refreshes the token once on a 401 before giving up.
+        """
+        path = f"/v1/tenant/users/{user_uuid}/persona"
+        body = {"persona": persona}
+        token = self.issue_tenant_token(
+            client_id=tenant_client_id, client_secret=tenant_client_secret
+        )
+        try:
+            return self._request(
+                "PATCH",
+                path,
+                json=body,
+                headers={"Authorization": f"Bearer {token.access_token}"},
+            )
+        except IOCloudAuthenticationError:
+            token = self.issue_tenant_token(
+                client_id=tenant_client_id,
+                client_secret=tenant_client_secret,
+                force_refresh=True,
+            )
+            return self._request(
+                "PATCH",
+                path,
+                json=body,
+                headers={"Authorization": f"Bearer {token.access_token}"},
+            )
+
     def _partner_request(
         self,
         method: str,
@@ -175,7 +260,7 @@ class IOCloudClient:
         )
 
     @staticmethod
-    def _token_is_fresh(token: PartnerToken | None) -> bool:
+    def _token_is_fresh(token: PartnerToken | TenantToken | None) -> bool:
         if token is None:
             return False
         expires_at = token.expires_at

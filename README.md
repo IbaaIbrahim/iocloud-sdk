@@ -59,3 +59,25 @@ mapping = client.map_external_tenant(
 
 The SDK raises `IOCloudAuthenticationError` for rejected bearer/client
 credentials and `IOCloudAPIError` for all other non-success API responses.
+
+## Updating a user's persona
+
+After onboarding, push a user's resolved persona onto the mapped tenant's
+federated user. The tenant-scoped persona endpoint needs a tenant token, so the
+partner first provisions a tenant credential (once), then the SDK issues and
+caches a tenant token per `client_id`:
+
+```python
+credential = client.create_tenant_credentials(tenant_uuid=tenant.uuid)
+
+client.set_user_persona(
+    user_uuid="the-ai-ecosystem-user-uuid",
+    persona="DRIVER AND/OR GUARDIAN",
+    tenant_client_id=credential.client_id,
+    tenant_client_secret=credential.client_secret,
+)
+```
+
+`client_secret` is returned only once, at creation — persist it to reuse for
+later persona updates. `set_user_persona` refreshes the tenant token once and
+retries on a `401`.
