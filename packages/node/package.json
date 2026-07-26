@@ -1,0 +1,43 @@
+{
+  "name": "@iocloud/sdk",
+  "version": "0.2.0",
+  "description": "Node.js and TypeScript SDK for IOCloud partner spaces",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "npm run build && node --test test/client.test.js",
+    "prepublishOnly": "npm test && npm run build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/IbaaIbrahim/iocloud-sdk.git",
+    "directory": "packages/node"
+  },
+  "bugs": {
+    "url": "https://github.com/IbaaIbrahim/iocloud-sdk/issues"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^5.7.0"
+  }
+}

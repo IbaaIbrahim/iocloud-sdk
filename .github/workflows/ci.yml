@@ -1,0 +1,72 @@
+name: SDK CI
+
+on:
+  push:
+    paths:
+      - "packages/**"
+      - "contracts/**"
+      - "openapi/**"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    paths:
+      - "packages/**"
+      - "contracts/**"
+      - "openapi/**"
+      - ".github/workflows/ci.yml"
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/python
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade pip build
+      - run: python -m pip install -e .
+      - run: python -m unittest discover -s tests
+      - run: python -m build
+
+  node:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/node
+    strategy:
+      matrix:
+        node-version: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: packages/node/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npm pack --dry-run
+
+  laravel:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/laravel
+    strategy:
+      matrix:
+        php-version: ["8.1", "8.4"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-version }}
+          coverage: none
+      - run: composer validate --strict
+      - run: composer install --prefer-dist --no-interaction --no-progress
+      - run: composer test

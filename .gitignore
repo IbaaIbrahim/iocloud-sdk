@@ -3,3 +3,11 @@ __pycache__/
 build/
 dist/
 *.egg-info/
+.venv/
+node_modules/
+coverage/
+.phpunit.cache/
+.phpunit.result.cache
+vendor/
+composer.lock
+.DS_Store

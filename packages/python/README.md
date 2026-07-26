@@ -1,0 +1,83 @@
+# IOCloud Python SDK
+
+Install the published dependency:
+
+```bash
+pip install iocloud-sdk
+```
+
+During local development:
+
+```bash
+pip install -e ./packages/python
+```
+
+## Partner usage
+
+```python
+from uuid import UUID
+
+from iocloud_sdk import IOCloudClient
+
+with IOCloudClient(
+    client_id="partner-client-id",
+    client_secret="partner-client-secret",
+    base_url="https://api.example.com",
+) as client:
+    token = client.issue_partner_token()
+
+    tenant = client.create_tenant(
+        application_uuid=UUID("11111111-1111-1111-1111-111111111111"),
+        name="Acme workspace",
+        slug="acme",
+        contact_email="ops@acme.example",
+    )
+
+    mapping = client.map_external_tenant(
+        provider_uuid=UUID("22222222-2222-2222-2222-222222222222"),
+        tenant_uuid=tenant.uuid,
+        external_tenant_id="acme-external-id",
+    )
+```
+
+Partner tokens are issued lazily and cached until shortly before expiration.
+An authenticated request that returns `401` triggers one token refresh and retry.
+
+## Mapping with a tenant token
+
+The mapping endpoint accepts either a partner token or a tenant token. A tenant
+token can map only its own internal tenant:
+
+```python
+mapping = client.map_external_tenant(
+    provider_uuid=provider_uuid,
+    tenant_uuid=tenant_uuid,
+    external_tenant_id="customer-42",
+    access_token=tenant_access_token,
+)
+```
+
+The SDK raises `IOCloudAuthenticationError` for rejected bearer/client
+credentials and `IOCloudAPIError` for all other non-success API responses.
+
+## Updating a user's persona
+
+After onboarding, push a user's resolved persona onto the mapped tenant's
+federated user. The tenant-scoped persona endpoint needs a tenant token, so the
+partner first provisions a tenant credential (once), then the SDK issues and
+caches a tenant token per `client_id`:
+
+```python
+credential = client.create_tenant_credentials(tenant_uuid=tenant.uuid)
+
+client.set_user_persona(
+    user_uuid="the-ai-ecosystem-user-uuid",
+    persona="DRIVER AND/OR GUARDIAN",
+    tenant_client_id=credential.client_id,
+    tenant_client_secret=credential.client_secret,
+)
+```
+
+`client_secret` is returned only once, at creation — persist it to reuse for
+later persona updates. `set_user_persona` refreshes the tenant token once and
+retries on a `401`.

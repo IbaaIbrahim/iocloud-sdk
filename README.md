@@ -1,83 +1,68 @@
-# IOCloud Python SDK
+# IOCloud SDKs
 
-Install the published dependency:
+Official IOCloud clients for Python, Node.js, and Laravel. Each package is
+released independently while sharing the same API contract and authentication
+behavior.
+
+| Ecosystem | Package | Source |
+| --- | --- | --- |
+| PyPI | `iocloud-sdk` | [`packages/python`](packages/python) |
+| npm | `@iocloud/sdk` | [`packages/node`](packages/node) |
+| Packagist | `iocloud/laravel-sdk` | [`packages/laravel`](packages/laravel) |
+
+## Repository layout
+
+```text
+openapi/                Canonical HTTP API contract
+contracts/fixtures/     Shared response and error examples
+packages/python/        Python 3.10+ SDK
+packages/node/          Node.js 20+ TypeScript SDK
+packages/laravel/       Laravel 10+ SDK
+.github/workflows/      Test and package-publishing automation
+```
+
+All clients implement:
+
+- partner and tenant client-credential authentication;
+- token caching with a 30-second expiry buffer;
+- one automatic token refresh and retry after a `401`;
+- tenant creation, external tenant mapping, tenant credentials, and user
+  persona updates;
+- typed responses and consistent API/authentication exceptions.
+
+## Local checks
 
 ```bash
-pip install iocloud-sdk
+# Python
+python -m venv .venv
+.venv/bin/python -m pip install -e packages/python
+.venv/bin/python -m unittest discover -s packages/python/tests
+
+# Node.js
+cd packages/node
+npm ci
+npm test
+npm run build
+
+# Laravel/PHP
+cd packages/laravel
+composer install
+composer test
 ```
 
-During local development:
+## Releases
 
-```bash
-pip install -e ./iocloud-sdk
+Each package has its own GitHub Actions publishing workflow and is released by
+pushing an ecosystem-specific tag:
+
+```text
+python-v0.2.0   -> PyPI
+node-v0.2.0     -> npm
+laravel-v0.2.0  -> Packagist-compatible Composer release
 ```
 
-## Partner usage
+The Python and npm workflows support trusted publishing. The Laravel workflow
+splits its self-contained package into a Composer-compatible repository, which
+Packagist can index automatically.
 
-```python
-from uuid import UUID
-
-from iocloud_sdk import IOCloudClient
-
-with IOCloudClient(
-    client_id="partner-client-id",
-    client_secret="partner-client-secret",
-    base_url="https://api.example.com",
-) as client:
-    token = client.issue_partner_token()
-
-    tenant = client.create_tenant(
-        application_uuid=UUID("11111111-1111-1111-1111-111111111111"),
-        name="Acme workspace",
-        slug="acme",
-        contact_email="ops@acme.example",
-    )
-
-    mapping = client.map_external_tenant(
-        provider_uuid=UUID("22222222-2222-2222-2222-222222222222"),
-        tenant_uuid=tenant.uuid,
-        external_tenant_id="acme-external-id",
-    )
-```
-
-Partner tokens are issued lazily and cached until shortly before expiration.
-An authenticated request that returns `401` triggers one token refresh and retry.
-
-## Mapping with a tenant token
-
-The mapping endpoint accepts either a partner token or a tenant token. A tenant
-token can map only its own internal tenant:
-
-```python
-mapping = client.map_external_tenant(
-    provider_uuid=provider_uuid,
-    tenant_uuid=tenant_uuid,
-    external_tenant_id="customer-42",
-    access_token=tenant_access_token,
-)
-```
-
-The SDK raises `IOCloudAuthenticationError` for rejected bearer/client
-credentials and `IOCloudAPIError` for all other non-success API responses.
-
-## Updating a user's persona
-
-After onboarding, push a user's resolved persona onto the mapped tenant's
-federated user. The tenant-scoped persona endpoint needs a tenant token, so the
-partner first provisions a tenant credential (once), then the SDK issues and
-caches a tenant token per `client_id`:
-
-```python
-credential = client.create_tenant_credentials(tenant_uuid=tenant.uuid)
-
-client.set_user_persona(
-    user_uuid="the-ai-ecosystem-user-uuid",
-    persona="DRIVER AND/OR GUARDIAN",
-    tenant_client_id=credential.client_id,
-    tenant_client_secret=credential.client_secret,
-)
-```
-
-`client_secret` is returned only once, at creation — persist it to reuse for
-later persona updates. `set_user_persona` refreshes the tenant token once and
-retries on a `401`.
+Before creating a tag, update that package's manifest version and changelog.

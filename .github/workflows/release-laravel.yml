@@ -1,0 +1,39 @@
+name: Release Laravel SDK
+
+on:
+  push:
+    tags:
+      - "laravel-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/laravel
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          coverage: none
+      - run: composer validate --strict
+      - run: composer install --prefer-dist --no-interaction --no-progress
+      - run: composer test
+      - name: Split and publish the Composer package repository
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#laravel-v}"
+          git subtree split --prefix=packages/laravel -b laravel-split
+          git remote add laravel "https://x-access-token:${LARAVEL_SPLIT_TOKEN}@github.com/IbaaIbrahim/iocloud-laravel-sdk.git"
+          git push laravel laravel-split:main
+          git tag "v${VERSION}" laravel-split
+          git push laravel "v${VERSION}"
+        working-directory: .
+        env:
+          LARAVEL_SPLIT_TOKEN: ${{ secrets.LARAVEL_SPLIT_TOKEN }}

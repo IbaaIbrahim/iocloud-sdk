@@ -1,0 +1,286 @@
+openapi: 3.1.0
+info:
+  title: IOCloud Partner and Tenant API
+  version: 1.0.0
+  description: Canonical contract used by the IOCloud SDK implementations.
+servers:
+  - url: https://api.example.com
+paths:
+  /v1/partner/auth/token:
+    post:
+      operationId: issuePartnerToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientCredentials'
+      responses:
+        '200':
+          description: Partner token issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerTokenResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+  /v1/partner/applications/{application_uuid}/tenants:
+    post:
+      operationId: createTenant
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ApplicationUuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTenantRequest'
+      responses:
+        '200':
+          description: Tenant created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        default:
+          $ref: '#/components/responses/ApiError'
+  /v1/partner/federation/providers/{provider_uuid}/tenants:
+    post:
+      operationId: mapExternalTenant
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProviderUuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MapExternalTenantRequest'
+      responses:
+        '200':
+          description: External tenant mapped.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalTenantMappingResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        default:
+          $ref: '#/components/responses/ApiError'
+  /v1/partner/tenants/{tenant_uuid}/credentials:
+    post:
+      operationId: createTenantCredentials
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/TenantUuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        '200':
+          description: Tenant credentials created. The secret is returned once.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantCredentialResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        default:
+          $ref: '#/components/responses/ApiError'
+  /v1/tenant/auth/token:
+    post:
+      operationId: issueTenantToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientCredentials'
+      responses:
+        '200':
+          description: Tenant token issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantTokenResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+  /v1/tenant/users/{user_uuid}/persona:
+    patch:
+      operationId: setUserPersona
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserUuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [persona]
+              properties:
+                persona:
+                  type: string
+      responses:
+        '200':
+          description: Persona updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        default:
+          $ref: '#/components/responses/ApiError'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    ApplicationUuid:
+      name: application_uuid
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ProviderUuid:
+      name: provider_uuid
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    TenantUuid:
+      name: tenant_uuid
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    UserUuid:
+      name: user_uuid
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    AuthenticationError:
+      description: Authentication failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ApiError:
+      description: API request failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    ClientCredentials:
+      type: object
+      required: [client_id, client_secret]
+      properties:
+        client_id: { type: string }
+        client_secret: { type: string }
+    Token:
+      type: object
+      required: [access_token, token_type, expires_at]
+      properties:
+        access_token: { type: string }
+        token_type: { type: string }
+        expires_at: { type: string, format: date-time }
+    PartnerTokenResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [token]
+          properties:
+            token: { $ref: '#/components/schemas/Token' }
+    TenantTokenResponse:
+      $ref: '#/components/schemas/PartnerTokenResponse'
+    CreateTenantRequest:
+      type: object
+      required: [name, slug, contact_email]
+      properties:
+        name: { type: string }
+        slug: { type: string }
+        contact_email: { type: string, format: email }
+    Tenant:
+      type: object
+      required: [uuid, application_uuid, name, slug, contact_email, status, created_at]
+      properties:
+        uuid: { type: string, format: uuid }
+        application_uuid: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        contact_email: { type: string, format: email }
+        status: { type: string }
+        created_at: { type: string, format: date-time }
+    TenantResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [tenant]
+          properties:
+            tenant: { $ref: '#/components/schemas/Tenant' }
+    MapExternalTenantRequest:
+      type: object
+      required: [tenant_uuid, external_tenant_id]
+      properties:
+        tenant_uuid: { type: string, format: uuid }
+        external_tenant_id: { type: string }
+    ExternalTenantMapping:
+      type: object
+      required: [identity_provider_uuid, tenant_uuid, external_tenant_id, created_at]
+      properties:
+        identity_provider_uuid: { type: string, format: uuid }
+        tenant_uuid: { type: string, format: uuid }
+        external_tenant_id: { type: string }
+        created_at: { type: string, format: date-time }
+    ExternalTenantMappingResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [mapping]
+          properties:
+            mapping: { $ref: '#/components/schemas/ExternalTenantMapping' }
+    TenantCredential:
+      type: object
+      required: [credential_uuid, tenant_uuid, client_id, client_secret]
+      properties:
+        credential_uuid: { type: string, format: uuid }
+        tenant_uuid: { type: string, format: uuid }
+        client_id: { type: string }
+        client_secret: { type: string }
+    TenantCredentialResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [credential]
+          properties:
+            credential: { $ref: '#/components/schemas/TenantCredential' }
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
