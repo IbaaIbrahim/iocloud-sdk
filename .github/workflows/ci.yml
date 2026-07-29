@@ -62,8 +62,11 @@ jobs:
       run:
         working-directory: packages/laravel
     strategy:
+      fail-fast: false
       matrix:
-        php-version: ["8.1", "8.4"]
+        # 8.2 is the floor: orchestra/testbench requires it, and the package uses
+        # readonly classes.
+        php-version: ["8.2", "8.4"]
     steps:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
