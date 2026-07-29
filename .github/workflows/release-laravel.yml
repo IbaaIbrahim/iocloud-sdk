@@ -55,7 +55,10 @@ jobs:
             "https://x-access-token:${LARAVEL_SPLIT_TOKEN}@github.com/${SPLIT_REPOSITORY}.git"
 
           # Surfaces a missing repository or an under-scoped token before the push.
-          if ! git ls-remote --exit-code laravel >/dev/null 2>&1; then
+          # No --exit-code: that reports failure when a remote simply has no refs,
+          # which is exactly the state of the split repository before its first
+          # release. Plain ls-remote exits 0 when reachable and 128 when not.
+          if ! git ls-remote laravel >/dev/null 2>&1; then
             echo "::error::Cannot reach https://github.com/${SPLIT_REPOSITORY}.git."
             echo "Confirm the repository exists and that LARAVEL_SPLIT_TOKEN grants it"
             echo "'Contents: Read and write'."
