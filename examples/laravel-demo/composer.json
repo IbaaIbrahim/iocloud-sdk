@@ -1,0 +1,64 @@
+{
+  "name": "iocloud/laravel-demo",
+  "description": "Demo partner portal that federates its users into IOCloud with the Laravel SDK",
+  "type": "project",
+  "license": "proprietary",
+  "require": {
+    "php": "^8.2",
+    "ext-openssl": "*",
+    "iocloud/laravel-sdk": "@dev",
+    "laravel/framework": "^11.0"
+  },
+  "require-dev": {
+    "firebase/php-jwt": "^6.10",
+    "mockery/mockery": "^1.6",
+    "phpunit/phpunit": "^11.0"
+  },
+  "repositories": [
+    {
+      "type": "path",
+      "url": "../../packages/laravel",
+      "options": {
+        "symlink": true
+      }
+    }
+  ],
+  "autoload": {
+    "psr-4": {
+      "App\\": "app/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Tests\\": "tests/"
+    }
+  },
+  "scripts": {
+    "post-autoload-dump": [
+      "@php artisan package:discover --ansi"
+    ],
+    "post-root-package-install": [
+      "@php -r \"file_exists('.env') || copy('.env.example', '.env');\""
+    ],
+    "post-create-project-cmd": [
+      "@php artisan key:generate --ansi"
+    ],
+    "test": "phpunit"
+  },
+  "config": {
+    "optimize-autoloader": true,
+    "preferred-install": "dist",
+    "sort-packages": true,
+    "allow-plugins": {
+      "pestphp/pest-plugin": true,
+      "php-http/discovery": true
+    },
+    "policy": {
+      "advisories": {
+        "block": false
+      }
+    }
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}

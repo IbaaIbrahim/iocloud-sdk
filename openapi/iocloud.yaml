@@ -48,6 +48,51 @@ paths:
           $ref: '#/components/responses/AuthenticationError'
         default:
           $ref: '#/components/responses/ApiError'
+  /v1/partner/federation/providers:
+    post:
+      operationId: createIdentityProvider
+      summary: Register the partner's own OIDC issuer as a trusted provider.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateIdentityProviderRequest'
+      responses:
+        '201':
+          description: Identity provider registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdentityProviderResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '409':
+          description: The issuer is already registered as a trusted provider.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        default:
+          $ref: '#/components/responses/ApiError'
+    get:
+      operationId: listIdentityProviders
+      summary: List the identity providers registered by the partner.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Identity providers listed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdentityProviderListResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        default:
+          $ref: '#/components/responses/ApiError'
   /v1/partner/federation/providers/{provider_uuid}/tenants:
     post:
       operationId: mapExternalTenant
@@ -100,6 +145,33 @@ paths:
           $ref: '#/components/responses/AuthenticationError'
         default:
           $ref: '#/components/responses/ApiError'
+  /v1/federation/token:
+    post:
+      operationId: exchangeSubjectToken
+      summary: Exchange a partner-signed OIDC JWT for a platform user session.
+      description: >-
+        RFC 8693 token exchange. Deliberately unauthenticated: the subject token
+        is the credential. Request and response use the OAuth wire format, not
+        the platform envelope.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TokenExchangeRequest'
+      responses:
+        '200':
+          description: Platform session issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenExchangeResponse'
+        '400':
+          description: The subject token or the request grammar was rejected.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenExchangeError'
   /v1/tenant/auth/token:
     post:
       operationId: issueTenantToken
@@ -238,6 +310,100 @@ components:
           required: [tenant]
           properties:
             tenant: { $ref: '#/components/schemas/Tenant' }
+    CreateIdentityProviderRequest:
+      type: object
+      required: [name, issuer, jwks_url, allowed_audiences]
+      properties:
+        name: { type: string, maxLength: 255 }
+        issuer:
+          type: string
+          maxLength: 500
+          description: >-
+            Compared byte-for-byte against the subject token's iss claim.
+        jwks_url:
+          type: string
+          maxLength: 500
+          description: >-
+            The only URL the platform fetches this issuer's signing keys from.
+        allowed_audiences:
+          type: array
+          minItems: 1
+          items: { type: string }
+        allowed_algorithms:
+          type: array
+          minItems: 1
+          items: { type: string }
+          default: [RS256, ES256]
+          description: Asymmetric only; HS* and "none" are rejected.
+        token_max_age_seconds:
+          type: integer
+          minimum: 1
+          maximum: 86400
+          default: 900
+        require_email_verified: { type: boolean, default: false }
+        user_claim: { type: string, maxLength: 100, default: sub }
+        tenant_claim: { type: string, maxLength: 100, default: tenant_id }
+        email_claim: { type: string, maxLength: 100, default: email }
+        name_claim: { type: string, maxLength: 100, default: name }
+        allow_jit_users: { type: boolean, default: false }
+    IdentityProvider:
+      type: object
+      required:
+        - uuid
+        - name
+        - issuer
+        - jwks_url
+        - allowed_audiences
+        - allowed_algorithms
+        - token_max_age_seconds
+        - require_email_verified
+        - user_claim
+        - tenant_claim
+        - email_claim
+        - name_claim
+        - allow_jit_users
+        - status
+        - created_at
+      properties:
+        uuid: { type: string, format: uuid }
+        name: { type: string }
+        issuer: { type: string }
+        jwks_url: { type: string }
+        allowed_audiences:
+          type: array
+          items: { type: string }
+        allowed_algorithms:
+          type: array
+          items: { type: string }
+        token_max_age_seconds: { type: integer }
+        require_email_verified: { type: boolean }
+        user_claim: { type: string }
+        tenant_claim: { type: string }
+        email_claim: { type: string }
+        name_claim: { type: string }
+        allow_jit_users: { type: boolean }
+        status: { type: string }
+        created_at: { type: string, format: date-time }
+    IdentityProviderResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [provider]
+          properties:
+            provider: { $ref: '#/components/schemas/IdentityProvider' }
+    IdentityProviderListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [providers]
+          properties:
+            providers:
+              type: array
+              items: { $ref: '#/components/schemas/IdentityProvider' }
     MapExternalTenantRequest:
       type: object
       required: [tenant_uuid, external_tenant_id]
@@ -278,6 +444,78 @@ components:
           required: [credential]
           properties:
             credential: { $ref: '#/components/schemas/TenantCredential' }
+    TokenExchangeRequest:
+      type: object
+      required: [grant_type, subject_token, subject_token_type]
+      properties:
+        grant_type:
+          type: string
+          const: 'urn:ietf:params:oauth:grant-type:token-exchange'
+        subject_token:
+          type: string
+          description: The OIDC JWT the partner signed with its own private key.
+        subject_token_type:
+          type: string
+          const: 'urn:ietf:params:oauth:token-type:jwt'
+    TokenExchangeResponse:
+      type: object
+      required:
+        - access_token
+        - issued_token_type
+        - token_type
+        - expires_in
+        - user_uuid
+        - name
+        - email
+      properties:
+        access_token:
+          type: string
+          description: Opaque platform session token; use as a bearer credential.
+        issued_token_type:
+          type: string
+          const: 'urn:ietf:params:oauth:token-type:access_token'
+        token_type: { type: string, const: Bearer }
+        expires_in: { type: integer }
+        user_uuid: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string, format: email }
+    TokenExchangeError:
+      type: object
+      required: [error, error_description]
+      properties:
+        error:
+          type: string
+          enum:
+            - unsupported_grant_type
+            - invalid_request
+            - invalid_grant
+            - invalid_target
+        error_description: { type: string }
+    JsonWebKey:
+      type: object
+      description: >-
+        One RSA public signing key. Served by the partner, never by this API;
+        the SDK builds this document from the generated federation keypair.
+      required: [kty, use, alg, kid, n, e]
+      properties:
+        kty: { type: string, const: RSA }
+        use: { type: string, const: sig }
+        alg: { type: string, const: RS256 }
+        kid:
+          type: string
+          description: RFC 7638 JWK thumbprint, so the id is stable per key.
+        n: { type: string, description: 'RSA modulus, base64url.' }
+        e: { type: string, description: 'RSA public exponent, base64url.' }
+    JsonWebKeySet:
+      type: object
+      description: >-
+        The document a partner serves at <issuer>/.well-known/jwks.json, which
+        the platform fetches from the provider row's jwks_url.
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items: { $ref: '#/components/schemas/JsonWebKey' }
     Error:
       type: object
       required: [code, message]
