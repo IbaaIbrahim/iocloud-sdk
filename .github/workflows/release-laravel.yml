@@ -15,9 +15,16 @@ jobs:
       run:
         working-directory: packages/laravel
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
+          # Full history: git subtree split replays every commit under the prefix.
           fetch-depth: 0
+          # Without this, checkout leaves its GITHUB_TOKEN in git config as an
+          # http.extraheader for github.com. That header wins over the credentials
+          # in the split remote's URL, so the push authenticates as
+          # github-actions[bot] — which has no access to the split repository — and
+          # fails with 403.
+          persist-credentials: false
       - uses: shivammathur/setup-php@v2
         with:
           php-version: "8.4"
@@ -28,12 +35,39 @@ jobs:
       - name: Split and publish the Composer package repository
         shell: bash
         run: |
+          set -euo pipefail
+
+          # Without this check an absent secret produces an empty credential and
+          # git fails with an opaque "could not read Username" (exit 128).
+          if [ -z "${LARAVEL_SPLIT_TOKEN}" ]; then
+            echo "::error::The LARAVEL_SPLIT_TOKEN secret is not set on this repository."
+            echo "Create a fine-grained personal access token with 'Contents: Read and"
+            echo "write' on ${SPLIT_REPOSITORY}, then add it under"
+            echo "Settings > Secrets and variables > Actions as LARAVEL_SPLIT_TOKEN."
+            exit 1
+          fi
+
           VERSION="${GITHUB_REF_NAME#laravel-v}"
+          echo "Releasing ${SPLIT_REPOSITORY} v${VERSION}"
+
           git subtree split --prefix=packages/laravel -b laravel-split
-          git remote add laravel "https://x-access-token:${LARAVEL_SPLIT_TOKEN}@github.com/IbaaIbrahim/iocloud-laravel-sdk.git"
+          git remote add laravel \
+            "https://x-access-token:${LARAVEL_SPLIT_TOKEN}@github.com/${SPLIT_REPOSITORY}.git"
+
+          # Surfaces a missing repository or an under-scoped token before the push.
+          if ! git ls-remote --exit-code laravel >/dev/null 2>&1; then
+            echo "::error::Cannot reach https://github.com/${SPLIT_REPOSITORY}.git."
+            echo "Confirm the repository exists and that LARAVEL_SPLIT_TOKEN grants it"
+            echo "'Contents: Read and write'."
+            exit 1
+          fi
+
           git push laravel laravel-split:main
           git tag "v${VERSION}" laravel-split
           git push laravel "v${VERSION}"
+
+          echo "Published https://github.com/${SPLIT_REPOSITORY} at v${VERSION}"
         working-directory: .
         env:
           LARAVEL_SPLIT_TOKEN: ${{ secrets.LARAVEL_SPLIT_TOKEN }}
+          SPLIT_REPOSITORY: IbaaIbrahim/iocloud-laravel-sdk
