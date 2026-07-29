@@ -1,0 +1,21 @@
+{
+  "data": {
+    "provider": {
+      "uuid": "4be507fc-2a1b-4e19-9f0e-2c7f7f5f8a11",
+      "name": "Acme Portal",
+      "issuer": "https://portal.acme.example",
+      "jwks_url": "https://portal.acme.example/.well-known/jwks.json",
+      "allowed_audiences": ["ai-ecosystem"],
+      "allowed_algorithms": ["RS256"],
+      "token_max_age_seconds": 900,
+      "require_email_verified": true,
+      "user_claim": "sub",
+      "tenant_claim": "tenant_id",
+      "email_claim": "email",
+      "name_claim": "name",
+      "allow_jit_users": true,
+      "status": "active",
+      "created_at": "2026-07-09T10:15:00Z"
+    }
+  }
+}

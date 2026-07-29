@@ -1,0 +1,21 @@
+#
+# Minimal OpenSSL configuration, used only as a fallback.
+#
+# Windows PHP builds (XAMPP, Laragon, the php.net zips) frequently ship without a
+# resolvable openssl.cnf and without OPENSSL_CONF set, which makes
+# openssl_pkey_new() and openssl_pkey_export() fail with:
+#
+#     error:07000072:configuration file routines::no such file
+#
+# Nothing in this file influences the generated key: FederationSigningKey states
+# the algorithm and modulus size explicitly. It exists so that OpenSSL has a
+# parseable config to open, keeping `php artisan iocloud:keys` portable.
+#
+# The SDK tries the platform's own configuration first and only falls back to
+# this file, so a deliberately configured OpenSSL is never overridden.
+#
+
+[ req ]
+distinguished_name = req_distinguished_name
+
+[ req_distinguished_name ]

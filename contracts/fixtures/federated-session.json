@@ -1,0 +1,9 @@
+{
+  "access_token": "mVH4d859c2a14f3b9d0e7c6a5b4938271",
+  "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+  "token_type": "Bearer",
+  "expires_in": 35999,
+  "user_uuid": "992d64fc-8f2a-4c31-b7e5-1d0a6c9f3b48",
+  "name": "Test User",
+  "email": "user@customer.example"
+}
