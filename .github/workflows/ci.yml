@@ -2,6 +2,10 @@ name: SDK CI
 
 on:
   push:
+    # Branches only. Without this, a release tag push also starts a CI run, so
+    # every release showed two workflows racing for the same commit.
+    branches:
+      - "**"
     paths:
       - "packages/**"
       - "examples/**"

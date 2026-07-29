@@ -47,6 +47,11 @@ jobs:
             exit 1
           fi
 
+          # A token pasted into the secrets form often carries a trailing newline or
+          # space, which corrupts the credential in the remote URL and shows up only
+          # as a 403. GitHub tokens contain no whitespace, so stripping it is safe.
+          LARAVEL_SPLIT_TOKEN="$(printf '%s' "${LARAVEL_SPLIT_TOKEN}" | tr -d '[:space:]')"
+
           VERSION="${GITHUB_REF_NAME#laravel-v}"
           echo "Releasing ${SPLIT_REPOSITORY} v${VERSION}"
 
@@ -54,14 +59,23 @@ jobs:
           git remote add laravel \
             "https://x-access-token:${LARAVEL_SPLIT_TOKEN}@github.com/${SPLIT_REPOSITORY}.git"
 
-          # Surfaces a missing repository or an under-scoped token before the push.
+          # Surfaces a missing repository or a rejected token before the push.
           # No --exit-code: that reports failure when a remote simply has no refs,
           # which is exactly the state of the split repository before its first
           # release. Plain ls-remote exits 0 when reachable and 128 when not.
           if ! git ls-remote laravel >/dev/null 2>&1; then
-            echo "::error::Cannot reach https://github.com/${SPLIT_REPOSITORY}.git."
-            echo "Confirm the repository exists and that LARAVEL_SPLIT_TOKEN grants it"
-            echo "'Contents: Read and write'."
+            # GitHub answers 403 for bad credentials even on a public repository,
+            # so an anonymous probe separates "token rejected" from "no such repo".
+            if git ls-remote "https://github.com/${SPLIT_REPOSITORY}.git" >/dev/null 2>&1; then
+              echo "::error::${SPLIT_REPOSITORY} is reachable without credentials, so LARAVEL_SPLIT_TOKEN was rejected."
+              echo "Check the token is not expired, has 'Contents: Read and write', and"
+              echo "lists ${SPLIT_REPOSITORY} under 'Only select repositories'."
+              echo "A classic token instead needs the full 'repo' scope."
+            else
+              echo "::error::Cannot reach ${SPLIT_REPOSITORY} at all."
+              echo "Confirm the owner/name is exactly right. If the repository is"
+              echo "private, LARAVEL_SPLIT_TOKEN must also grant it access."
+            fi
             exit 1
           fi
 
