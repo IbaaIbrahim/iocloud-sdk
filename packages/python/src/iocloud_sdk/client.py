@@ -15,9 +15,12 @@ from .models import (
     FederatedSession,
     IdentityProvider,
     PartnerToken,
+    PlanSubscription,
     SubjectTokenClaimNames,
     Tenant,
     TenantCredential,
+    TenantPlan,
+    TenantSubscription,
     TenantToken,
 )
 
@@ -122,6 +125,86 @@ class IOCloudClient:
             },
         )
         return Tenant.from_payload(data["tenant"])
+
+    # ------------------------------------------------------------------
+    # Tenant plans and subscriptions
+    # ------------------------------------------------------------------
+
+    def list_tenant_plans(
+        self, *, page: int = 1, limit: int = 25
+    ) -> list[TenantPlan]:
+        """List the tenant plans this partner offers."""
+        data = self._partner_request(
+            "GET",
+            "/v1/partner/plans/tenant",
+            params={"page": page, "limit": limit},
+        )
+        return [TenantPlan.from_payload(item) for item in data.get("list", [])]
+
+    def subscribe_tenant(
+        self,
+        *,
+        tenant_uuid: UUID | str,
+        plan_uuid: UUID | str,
+        billing_cycle: str = "monthly",
+        activate_now: bool = True,
+        reference: str | None = None,
+    ) -> TenantSubscription:
+        """Put one of the partner's tenants on one of the partner's plans.
+
+        Tenants are the partner's clients and never pay this platform, so the
+        partner owns both halves of the flow. With ``activate_now`` (the
+        default) the subscription is created AND activated in one call: the
+        billing window opens and the tenant's plan balance is provisioned as
+        ``quota.child_caps`` rows — the tenant's own cap from the plan's
+        ``credits`` and one per active user from ``user_credits_cap``.
+
+        Pass ``activate_now=False`` to record the intent first (status
+        ``pending_payment``) and call :meth:`activate_tenant_subscription`
+        once the client has actually paid. ``reference`` is free text kept in
+        the platform's audit trail (invoice number, "included in retainer").
+        """
+        data = self._partner_request(
+            "POST",
+            "/v1/partner/plans/tenant/subscriptions",
+            json={
+                "tenant_uuid": str(tenant_uuid),
+                "plan_uuid": str(plan_uuid),
+                "billing_cycle": billing_cycle,
+                "activate_now": activate_now,
+                "reference": reference,
+            },
+        )
+        return TenantSubscription.from_payload(data)
+
+    def activate_tenant_subscription(
+        self,
+        *,
+        subscription_uuid: UUID | str,
+        reference: str | None = None,
+    ) -> TenantSubscription:
+        """Activate a pending tenant subscription and provision its balance.
+
+        Call this after collecting payment from the tenant in your own
+        billing system. Idempotent: activating an already-active subscription
+        returns it unchanged with ``provisioned`` set to None.
+        """
+        data = self._partner_request(
+            "POST",
+            f"/v1/partner/plans/tenant/subscriptions/{subscription_uuid}/activate",
+            json={"reference": reference},
+        )
+        return TenantSubscription.from_payload(data)
+
+    def list_tenant_subscriptions(self) -> list[PlanSubscription]:
+        """List every subscription held by this partner's tenants."""
+        data = self._partner_request(
+            "GET", "/v1/partner/plans/tenant/subscriptions"
+        )
+        return [
+            PlanSubscription.from_payload(item)
+            for item in data.get("subscriptions", [])
+        ]
 
     def create_identity_provider(
         self,
@@ -379,6 +462,7 @@ class IOCloudClient:
         path: str,
         *,
         json: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         token = self.issue_partner_token()
         try:
@@ -386,6 +470,7 @@ class IOCloudClient:
                 method,
                 path,
                 json=json,
+                params=params,
                 headers={"Authorization": f"Bearer {token.access_token}"},
             )
         except IOCloudAuthenticationError:
@@ -394,6 +479,7 @@ class IOCloudClient:
                 method,
                 path,
                 json=json,
+                params=params,
                 headers={"Authorization": f"Bearer {token.access_token}"},
             )
 
@@ -403,12 +489,14 @@ class IOCloudClient:
         path: str,
         *,
         json: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         response = self._http.request(
             method,
             f"{self._base_url}{path}",
             json=json,
+            params=params,
             headers=headers,
         )
         body = _json_object(response)

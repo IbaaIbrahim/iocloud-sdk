@@ -145,3 +145,85 @@ export interface SetUserPersonaInput {
   tenantClientId: string;
   tenantClientSecret: string;
 }
+
+/**
+ * A plan the partner offers its own tenants.
+ *
+ * `credits` is the tenant's included balance and `userCreditsCap` the per-user
+ * share of it; both become child-cap rows when a subscription is activated.
+ */
+export interface TenantPlan {
+  uuid: string;
+  name: string;
+  monthlyPriceCents: number;
+  yearlyPriceCents: number;
+  tpm: number;
+  rpm: number;
+  credits: number;
+  userCreditsCap: number;
+  userTpm: number;
+  userRpm: number;
+}
+
+/**
+ * A subscription linking a subscriber to a plan for a billing period.
+ *
+ * `status` is `pending_payment` until activated, then `paid`. The window
+ * (`subscribedFrom`/`subscribedTo`) is null while pending — it is established
+ * at activation and is what makes the plan and its balance active.
+ */
+export interface PlanSubscription {
+  uuid: string;
+  status: string;
+  planType: string;
+  billingCycle: string;
+  subscribedFrom: Date | null;
+  subscribedTo: Date | null;
+  paymentTransactionUuid: string | null;
+  createdAt: Date;
+}
+
+/** One balance row an activation created. */
+export interface ProvisionedCap {
+  child: string;
+  id: number;
+  cap: number;
+}
+
+/**
+ * The balance rows an activation created. A tenant subscription provisions
+ * `capsCreated` and never a pool: tenants draw on their partner's credit pool,
+ * bounded by those caps.
+ */
+export interface ProvisionedBalance {
+  poolCreated: boolean;
+  poolCredits: number;
+  capsCreated: ProvisionedCap[];
+}
+
+/**
+ * A subscription plus whatever its activation provisioned.
+ *
+ * `provisioned` is null when this call provisioned nothing — the subscription
+ * is still pending payment, or an already-active one was activated again
+ * (activation is idempotent).
+ */
+export interface TenantSubscription {
+  subscription: PlanSubscription;
+  provisioned: ProvisionedBalance | null;
+}
+
+export interface SubscribeTenantInput {
+  tenantUuid: string;
+  planUuid: string;
+  billingCycle?: "monthly" | "yearly";
+  /** Defaults to true: create AND activate in one call. */
+  activateNow?: boolean;
+  /** Free text kept in the platform's audit trail (invoice number, note). */
+  reference?: string;
+}
+
+export interface ActivateTenantSubscriptionInput {
+  subscriptionUuid: string;
+  reference?: string;
+}

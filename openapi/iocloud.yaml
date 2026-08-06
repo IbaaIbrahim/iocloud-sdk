@@ -145,6 +145,116 @@ paths:
           $ref: '#/components/responses/AuthenticationError'
         default:
           $ref: '#/components/responses/ApiError'
+  /v1/partner/plans/tenant:
+    get:
+      operationId: listTenantPlans
+      summary: List the tenant plans this partner offers.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 10 }
+      responses:
+        '200':
+          description: Tenant plans listed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantPlanListResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        default:
+          $ref: '#/components/responses/ApiError'
+  /v1/partner/plans/tenant/subscriptions:
+    get:
+      operationId: listTenantSubscriptions
+      summary: List every subscription held by this partner's tenants.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Subscriptions listed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanSubscriptionListResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        default:
+          $ref: '#/components/responses/ApiError'
+    post:
+      operationId: subscribeTenant
+      summary: Put one of the partner's tenants on one of the partner's plans.
+      description: >-
+        Tenants are the partner's clients and never pay this platform, so the
+        partner owns both halves of the flow. With activate_now the subscription
+        is created AND activated in one call: the billing window opens and the
+        tenant's balance is provisioned as quota.child_caps rows — the tenant's
+        own cap from the plan's credits, plus one per active user from
+        user_credits_cap.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscribeTenantRequest'
+      responses:
+        '201':
+          description: Subscription created (and activated when requested).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSubscriptionResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '404':
+          description: The tenant or the plan was not found for this partner.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        default:
+          $ref: '#/components/responses/ApiError'
+  /v1/partner/plans/tenant/subscriptions/{subscription_uuid}/activate:
+    post:
+      operationId: activateTenantSubscription
+      summary: Mark a tenant subscription paid and provision its balance.
+      description: >-
+        The fallback for money collected outside this platform: the partner
+        billed its client in its own system. Runs the same activation path a
+        gateway-verified payment would. Idempotent — activating an
+        already-active subscription returns it with provisioning null.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SubscriptionUuid'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManualActivationRequest'
+      responses:
+        '200':
+          description: Subscription activated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSubscriptionResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '404':
+          description: No such subscription for one of this partner's tenants.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        default:
+          $ref: '#/components/responses/ApiError'
   /v1/federation/token:
     post:
       operationId: exchangeSubjectToken
@@ -240,6 +350,11 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    SubscriptionUuid:
+      name: subscription_uuid
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
     UserUuid:
       name: user_uuid
       in: path
@@ -310,6 +425,134 @@ components:
           required: [tenant]
           properties:
             tenant: { $ref: '#/components/schemas/Tenant' }
+    TenantPlan:
+      type: object
+      required:
+        [uuid, name, monthly_price_cents, yearly_price_cents, tpm, rpm, credits,
+         user_credits_cap, user_tpm, user_rpm]
+      properties:
+        uuid: { type: string, format: uuid }
+        name: { type: string }
+        monthly_price_cents: { type: integer, minimum: 0 }
+        yearly_price_cents: { type: integer, minimum: 0 }
+        tpm: { type: integer, minimum: 1 }
+        rpm: { type: integer, minimum: 1 }
+        credits:
+          type: integer
+          minimum: 0
+          description: The tenant's included balance, provisioned as its child cap.
+        user_credits_cap:
+          type: integer
+          minimum: 0
+          description: Per-user share of the balance, one cap row per active user.
+        user_tpm: { type: integer, minimum: 1 }
+        user_rpm: { type: integer, minimum: 1 }
+    TenantPlanListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [list, pagination]
+          properties:
+            list:
+              type: array
+              items: { $ref: '#/components/schemas/TenantPlan' }
+            pagination: { $ref: '#/components/schemas/Pagination' }
+    Pagination:
+      type: object
+      required: [page, total_pages, limit, total]
+      properties:
+        page: { type: integer }
+        total_pages: { type: integer }
+        limit: { type: integer }
+        total: { type: integer }
+    PlanSubscription:
+      type: object
+      required: [uuid, status, plan_type, billing_cycle, created_at]
+      properties:
+        uuid: { type: string, format: uuid }
+        status: { type: string, enum: [pending_payment, declined, paid] }
+        plan_type: { type: string, enum: [partner_plans, tenant_plans] }
+        billing_cycle: { type: string, enum: [monthly, yearly] }
+        subscribed_from:
+          type: string
+          format: date-time
+          nullable: true
+          description: Null while pending; the window opens at activation.
+        subscribed_to: { type: string, format: date-time, nullable: true }
+        payment_transaction_uuid:
+          type: string
+          format: uuid
+          nullable: true
+          description: Null when activated manually — no platform payment exists.
+        created_at: { type: string, format: date-time }
+    PlanSubscriptionListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [subscriptions]
+          properties:
+            subscriptions:
+              type: array
+              items: { $ref: '#/components/schemas/PlanSubscription' }
+    ProvisionedBalance:
+      type: object
+      required: [pool_created, pool_credits, caps_created]
+      properties:
+        pool_created:
+          type: boolean
+          description: >-
+            False for tenant subscriptions: tenants draw on the partner's pool,
+            bounded by their caps, and never own a pool.
+        pool_credits: { type: integer, minimum: 0 }
+        caps_created:
+          type: array
+          items:
+            type: object
+            properties:
+              child: { type: string, enum: [tenant, user] }
+              id: { type: integer }
+              cap: { type: integer, minimum: 0 }
+    SubscribeTenantRequest:
+      type: object
+      required: [tenant_uuid, plan_uuid]
+      properties:
+        tenant_uuid: { type: string, format: uuid }
+        plan_uuid: { type: string, format: uuid }
+        billing_cycle: { type: string, enum: [monthly, yearly], default: monthly }
+        activate_now:
+          type: boolean
+          default: false
+          description: Create and activate in one call, provisioning the caps.
+        reference:
+          type: string
+          maxLength: 255
+          nullable: true
+          description: Free text kept in the audit trail (invoice number, note).
+    ManualActivationRequest:
+      type: object
+      properties:
+        reference:
+          type: string
+          maxLength: 255
+          nullable: true
+    TenantSubscriptionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [subscription]
+          properties:
+            subscription: { $ref: '#/components/schemas/PlanSubscription' }
+            provisioning:
+              nullable: true
+              allOf:
+                - $ref: '#/components/schemas/ProvisionedBalance'
+              description: Null when this call provisioned nothing.
     CreateIdentityProviderRequest:
       type: object
       required: [name, issuer, jwks_url, allowed_audiences]

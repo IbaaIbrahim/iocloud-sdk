@@ -208,3 +208,130 @@ class FederatedSession:
             name=str(payload["name"]),
             email=str(payload["email"]),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class TenantPlan:
+    """A plan the partner offers its own tenants.
+
+    ``credits`` is the tenant's included balance and ``user_credits_cap`` the
+    per-user share of it; both become ``quota.child_caps`` rows when a
+    subscription to this plan is activated.
+    """
+
+    uuid: UUID
+    name: str
+    monthly_price_cents: int
+    yearly_price_cents: int
+    tpm: int
+    rpm: int
+    credits: int
+    user_credits_cap: int
+    user_tpm: int
+    user_rpm: int
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "TenantPlan":
+        return cls(
+            uuid=UUID(str(payload["uuid"])),
+            name=str(payload["name"]),
+            monthly_price_cents=int(payload["monthly_price_cents"]),
+            yearly_price_cents=int(payload["yearly_price_cents"]),
+            tpm=int(payload["tpm"]),
+            rpm=int(payload["rpm"]),
+            credits=int(payload["credits"]),
+            user_credits_cap=int(payload["user_credits_cap"]),
+            user_tpm=int(payload["user_tpm"]),
+            user_rpm=int(payload["user_rpm"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PlanSubscription:
+    """A subscription linking a subscriber to a plan for a billing period.
+
+    ``status`` is ``pending_payment`` until activated, then ``paid``.
+    ``subscribed_from`` / ``subscribed_to`` are None while pending — the
+    window is established at activation and is what makes the plan (and the
+    balance it provisions) active.
+    """
+
+    uuid: UUID
+    status: str
+    plan_type: str
+    billing_cycle: str
+    subscribed_from: datetime | None
+    subscribed_to: datetime | None
+    payment_transaction_uuid: UUID | None
+    created_at: datetime
+
+    @property
+    def is_active(self) -> bool:
+        return self.status == "paid"
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "PlanSubscription":
+        subscribed_from = payload.get("subscribed_from")
+        subscribed_to = payload.get("subscribed_to")
+        payment_uuid = payload.get("payment_transaction_uuid")
+        return cls(
+            uuid=UUID(str(payload["uuid"])),
+            status=str(payload["status"]),
+            plan_type=str(payload["plan_type"]),
+            billing_cycle=str(payload["billing_cycle"]),
+            subscribed_from=(
+                _datetime(subscribed_from) if subscribed_from else None
+            ),
+            subscribed_to=_datetime(subscribed_to) if subscribed_to else None,
+            payment_transaction_uuid=(
+                UUID(str(payment_uuid)) if payment_uuid else None
+            ),
+            created_at=_datetime(payload["created_at"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ProvisionedBalance:
+    """The balance rows an activation created.
+
+    A tenant subscription provisions ``caps_created`` (the tenant's own cap
+    plus one per active user) and never a pool: tenants draw on their
+    partner's credit pool, bounded by those caps.
+    """
+
+    pool_created: bool
+    pool_credits: int
+    caps_created: tuple[dict[str, Any], ...]
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "ProvisionedBalance":
+        return cls(
+            pool_created=bool(payload.get("pool_created", False)),
+            pool_credits=int(payload.get("pool_credits", 0)),
+            caps_created=tuple(payload.get("caps_created") or ()),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TenantSubscription:
+    """A subscription plus whatever its activation provisioned.
+
+    ``provisioned`` is None when nothing was provisioned by this call — the
+    subscription is still pending payment, or an already-active subscription
+    was activated again (activation is idempotent).
+    """
+
+    subscription: PlanSubscription
+    provisioned: ProvisionedBalance | None
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "TenantSubscription":
+        provisioning = payload.get("provisioning")
+        return cls(
+            subscription=PlanSubscription.from_payload(payload["subscription"]),
+            provisioned=(
+                ProvisionedBalance.from_payload(provisioning)
+                if isinstance(provisioning, dict)
+                else None
+            ),
+        )

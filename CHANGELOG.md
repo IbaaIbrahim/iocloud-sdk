@@ -5,6 +5,20 @@ independently, so entries identify the affected packages.
 
 ## 0.3.0 - Unreleased
 
+### Shared — tenant plans and subscriptions
+
+- Added `listTenantPlans`, `subscribeTenant`, `activateTenantSubscription`, and
+  `listTenantSubscriptions` to all three packages, with typed `TenantPlan`,
+  `PlanSubscription`, `ProvisionedBalance`, and `TenantSubscription` models.
+- `subscribeTenant` defaults to `activate_now`, so one call both subscribes the
+  tenant and provisions its balance (the tenant's child cap from the plan's
+  credits, plus one cap per active user from `user_credits_cap`).
+- Activation is the partner's call, never the tenant's: tenants are the
+  partner's clients and pay the partner, so the platform exposes no
+  tenant-facing payment endpoint. Activation is idempotent, and the optional
+  `reference` is recorded in the platform's audit trail.
+- Documented the paths and payloads in `openapi/iocloud.yaml`.
+
 Partner-side federation moves into the SDK. Previously a partner had to run its
 own OIDC issuer — generate an RSA keypair, serve a JWKS, hand-roll a signed JWT
 per login, and drive the RFC 8693 exchange. All of it is now SDK surface.

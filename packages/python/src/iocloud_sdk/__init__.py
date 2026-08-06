@@ -22,9 +22,13 @@ from .models import (
     FederatedSession,
     IdentityProvider,
     PartnerToken,
+    PlanSubscription,
+    ProvisionedBalance,
     SubjectTokenClaimNames,
     Tenant,
     TenantCredential,
+    TenantPlan,
+    TenantSubscription,
     TenantToken,
 )
 
@@ -40,9 +44,13 @@ __all__ = [
     "IdentityProvider",
     "JWT_TOKEN_TYPE",
     "PartnerToken",
+    "PlanSubscription",
+    "ProvisionedBalance",
     "SubjectTokenClaimNames",
     "TOKEN_EXCHANGE_GRANT_TYPE",
     "Tenant",
     "TenantCredential",
+    "TenantPlan",
+    "TenantSubscription",
     "TenantToken",
 ]

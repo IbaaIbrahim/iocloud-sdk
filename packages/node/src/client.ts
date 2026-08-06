@@ -6,6 +6,7 @@ import {
 } from "./errors.js";
 import type { SubjectTokenIssuer } from "./federation.js";
 import type {
+  ActivateTenantSubscriptionInput,
   CreateIdentityProviderInput,
   CreateTenantInput,
   ExternalTenantMapping,
@@ -16,10 +17,15 @@ import type {
   JsonWebKeySet,
   MapExternalTenantInput,
   PartnerToken,
+  PlanSubscription,
+  ProvisionedBalance,
   SetUserPersonaInput,
   SubjectTokenClaimNames,
+  SubscribeTenantInput,
   Tenant,
   TenantCredential,
+  TenantPlan,
+  TenantSubscription,
   TenantToken,
 } from "./models.js";
 
@@ -115,6 +121,77 @@ export class IOCloudClient {
       status: string(tenant.status),
       createdAt: new Date(string(tenant.created_at)),
     };
+  }
+
+  /** List the tenant plans this partner offers. */
+  async listTenantPlans(
+    options: { page?: number; limit?: number } = {},
+  ): Promise<TenantPlan[]> {
+    const page = options.page ?? 1;
+    const limit = options.limit ?? 25;
+    const data = await this.partnerRequest(
+      "GET",
+      `/v1/partner/plans/tenant?page=${page}&limit=${limit}`,
+    );
+    return array(data.list).map((item) => parseTenantPlan(record(item)));
+  }
+
+  /**
+   * Put one of the partner's tenants on one of the partner's plans.
+   *
+   * Tenants are the partner's clients and never pay this platform, so the
+   * partner owns both halves of the flow. With `activateNow` (the default) the
+   * subscription is created AND activated in one call: the billing window opens
+   * and the tenant's balance is provisioned as child-cap rows — the tenant's
+   * own cap from the plan's `credits`, plus one per active user from
+   * `userCreditsCap`.
+   *
+   * Pass `activateNow: false` to record the intent first (status
+   * `pending_payment`) and call {@link activateTenantSubscription} once the
+   * client has actually paid.
+   */
+  async subscribeTenant(input: SubscribeTenantInput): Promise<TenantSubscription> {
+    const data = await this.partnerRequest(
+      "POST",
+      "/v1/partner/plans/tenant/subscriptions",
+      {
+        tenant_uuid: input.tenantUuid,
+        plan_uuid: input.planUuid,
+        billing_cycle: input.billingCycle ?? "monthly",
+        activate_now: input.activateNow ?? true,
+        reference: input.reference ?? null,
+      },
+    );
+    return parseTenantSubscription(data);
+  }
+
+  /**
+   * Activate a pending tenant subscription and provision its balance.
+   *
+   * Call this after collecting payment from the tenant in your own billing
+   * system. Idempotent: activating an already-active subscription returns it
+   * unchanged with `provisioned` null.
+   */
+  async activateTenantSubscription(
+    input: ActivateTenantSubscriptionInput,
+  ): Promise<TenantSubscription> {
+    const data = await this.partnerRequest(
+      "POST",
+      `/v1/partner/plans/tenant/subscriptions/${input.subscriptionUuid}/activate`,
+      { reference: input.reference ?? null },
+    );
+    return parseTenantSubscription(data);
+  }
+
+  /** List every subscription held by this partner's tenants. */
+  async listTenantSubscriptions(): Promise<PlanSubscription[]> {
+    const data = await this.partnerRequest(
+      "GET",
+      "/v1/partner/plans/tenant/subscriptions",
+    );
+    return array(data.subscriptions).map((item) =>
+      parsePlanSubscription(record(item)),
+    );
   }
 
   /**
@@ -381,6 +458,67 @@ function parseToken(payload: JsonObject): PartnerToken {
     accessToken: string(payload.access_token),
     tokenType: string(payload.token_type),
     expiresAt: new Date(string(payload.expires_at)),
+  };
+}
+
+function parseTenantPlan(payload: JsonObject): TenantPlan {
+  return {
+    uuid: string(payload.uuid),
+    name: string(payload.name),
+    monthlyPriceCents: integer(payload.monthly_price_cents),
+    yearlyPriceCents: integer(payload.yearly_price_cents),
+    tpm: integer(payload.tpm),
+    rpm: integer(payload.rpm),
+    credits: integer(payload.credits),
+    userCreditsCap: integer(payload.user_credits_cap),
+    userTpm: integer(payload.user_tpm),
+    userRpm: integer(payload.user_rpm),
+  };
+}
+
+function parsePlanSubscription(payload: JsonObject): PlanSubscription {
+  return {
+    uuid: string(payload.uuid),
+    status: string(payload.status),
+    planType: string(payload.plan_type),
+    billingCycle: string(payload.billing_cycle),
+    // Null while pending payment: the window opens only at activation.
+    subscribedFrom: payload.subscribed_from
+      ? new Date(string(payload.subscribed_from))
+      : null,
+    subscribedTo: payload.subscribed_to
+      ? new Date(string(payload.subscribed_to))
+      : null,
+    paymentTransactionUuid: payload.payment_transaction_uuid
+      ? string(payload.payment_transaction_uuid)
+      : null,
+    createdAt: new Date(string(payload.created_at)),
+  };
+}
+
+function parseProvisionedBalance(payload: JsonObject): ProvisionedBalance {
+  return {
+    poolCreated: Boolean(payload.pool_created),
+    poolCredits: integer(payload.pool_credits ?? 0),
+    capsCreated: array(payload.caps_created).map((item) => {
+      const cap = record(item);
+      return {
+        child: string(cap.child),
+        id: integer(cap.id),
+        cap: integer(cap.cap),
+      };
+    }),
+  };
+}
+
+function parseTenantSubscription(payload: JsonObject): TenantSubscription {
+  const provisioning = payload.provisioning;
+  return {
+    subscription: parsePlanSubscription(record(payload.subscription)),
+    provisioned:
+      provisioning && typeof provisioning === "object"
+        ? parseProvisionedBalance(record(provisioning))
+        : null,
   };
 }
 

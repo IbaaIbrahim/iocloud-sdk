@@ -18,7 +18,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "test": "npm run build && node --test test/client.test.js test/client-federation.test.js test/federation.test.js",
+    "test": "npm run build && node --test test/client.test.js test/client-plans.test.js test/client-federation.test.js test/federation.test.js",
     "prepublishOnly": "npm test && npm run build"
   },
   "engines": {

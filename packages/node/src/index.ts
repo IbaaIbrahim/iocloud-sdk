@@ -23,6 +23,7 @@ export {
   IOCloudTokenExchangeError,
 } from "./errors.js";
 export type {
+  ActivateTenantSubscriptionInput,
   CreateIdentityProviderInput,
   CreateTenantInput,
   ExternalTenantMapping,
@@ -34,9 +35,15 @@ export type {
   JsonWebKeySet,
   MapExternalTenantInput,
   PartnerToken,
+  PlanSubscription,
+  ProvisionedBalance,
+  ProvisionedCap,
   SetUserPersonaInput,
   SubjectTokenClaimNames,
+  SubscribeTenantInput,
   Tenant,
   TenantCredential,
+  TenantPlan,
+  TenantSubscription,
   TenantToken,
 } from "./models.js";

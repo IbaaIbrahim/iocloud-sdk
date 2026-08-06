@@ -9,9 +9,12 @@ use IOCloud\Laravel\Data\ExternalTenantMapping;
 use IOCloud\Laravel\Data\FederatedSession;
 use IOCloud\Laravel\Data\IdentityProvider;
 use IOCloud\Laravel\Data\PartnerToken;
+use IOCloud\Laravel\Data\PlanSubscription;
 use IOCloud\Laravel\Data\SubjectTokenClaimNames;
 use IOCloud\Laravel\Data\Tenant;
 use IOCloud\Laravel\Data\TenantCredential;
+use IOCloud\Laravel\Data\TenantPlan;
+use IOCloud\Laravel\Data\TenantSubscription;
 use IOCloud\Laravel\Data\TenantToken;
 use IOCloud\Laravel\Exceptions\IOCloudAPIException;
 use IOCloud\Laravel\Exceptions\IOCloudAuthenticationException;
@@ -85,6 +88,105 @@ final class IOCloudClient
         );
 
         return Tenant::fromPayload($this->array($data['tenant']));
+    }
+
+    /**
+     * List the tenant plans this partner offers.
+     *
+     * @return list<TenantPlan>
+     */
+    public function listTenantPlans(int $page = 1, int $limit = 25): array
+    {
+        $data = $this->partnerRequest(
+            'GET',
+            "/v1/partner/plans/tenant?page={$page}&limit={$limit}",
+            null,
+        );
+
+        $plans = [];
+        foreach ((array) ($data['list'] ?? []) as $plan) {
+            $plans[] = TenantPlan::fromPayload((array) $plan);
+        }
+
+        return $plans;
+    }
+
+    /**
+     * Put one of the partner's tenants on one of the partner's plans.
+     *
+     * Tenants are the partner's clients and never pay this platform, so the
+     * partner owns both halves of the flow. With `$activateNow` (the default)
+     * the subscription is created AND activated in one call: the billing window
+     * opens and the tenant's balance is provisioned as child-cap rows — the
+     * tenant's own cap from the plan's `credits`, plus one per active user from
+     * `user_credits_cap`.
+     *
+     * Pass `$activateNow = false` to record the intent first (status
+     * `pending_payment`) and call {@see activateTenantSubscription()} once the
+     * client has actually paid. `$reference` is free text kept in the
+     * platform's audit trail (invoice number, "included in retainer").
+     */
+    public function subscribeTenant(
+        string $tenantUuid,
+        string $planUuid,
+        string $billingCycle = 'monthly',
+        bool $activateNow = true,
+        ?string $reference = null,
+    ): TenantSubscription {
+        $data = $this->partnerRequest(
+            'POST',
+            '/v1/partner/plans/tenant/subscriptions',
+            [
+                'tenant_uuid' => $tenantUuid,
+                'plan_uuid' => $planUuid,
+                'billing_cycle' => $billingCycle,
+                'activate_now' => $activateNow,
+                'reference' => $reference,
+            ],
+        );
+
+        return TenantSubscription::fromPayload($data);
+    }
+
+    /**
+     * Activate a pending tenant subscription and provision its balance.
+     *
+     * Call this after collecting payment from the tenant in your own billing
+     * system. Idempotent: activating an already-active subscription returns it
+     * unchanged with `provisioned` null.
+     */
+    public function activateTenantSubscription(
+        string $subscriptionUuid,
+        ?string $reference = null,
+    ): TenantSubscription {
+        $data = $this->partnerRequest(
+            'POST',
+            "/v1/partner/plans/tenant/subscriptions/{$subscriptionUuid}/activate",
+            ['reference' => $reference],
+        );
+
+        return TenantSubscription::fromPayload($data);
+    }
+
+    /**
+     * List every subscription held by this partner's tenants.
+     *
+     * @return list<PlanSubscription>
+     */
+    public function listTenantSubscriptions(): array
+    {
+        $data = $this->partnerRequest(
+            'GET',
+            '/v1/partner/plans/tenant/subscriptions',
+            null,
+        );
+
+        $subscriptions = [];
+        foreach ((array) ($data['subscriptions'] ?? []) as $subscription) {
+            $subscriptions[] = PlanSubscription::fromPayload((array) $subscription);
+        }
+
+        return $subscriptions;
     }
 
     /**

@@ -29,9 +29,56 @@ All clients implement:
 - one automatic token refresh and retry after a `401`;
 - tenant creation, external tenant mapping, tenant credentials, and user
   persona updates;
+- tenant plans and subscriptions: list the plans you offer, put a tenant on
+  one, and activate it (see below);
 - federation: RSA keypair generation, the JWKS document, subject-token signing,
   identity-provider registration, and the RFC 8693 token exchange;
 - typed responses and consistent API/authentication exceptions.
+
+## Putting a tenant on a plan
+
+Your tenants are your clients: they pay *you*, never the platform. So the
+platform gives you both halves of the flow and no tenant-facing payment
+endpoint at all — you subscribe the tenant and you say when it is paid.
+
+Activation is the step that provisions the balance. It opens the billing window
+and writes the child-cap rows the metering layer enforces: the tenant's own cap
+from the plan's `credits`, plus one cap per active user from `user_credits_cap`.
+Tenants never own a credit pool — they draw on yours, bounded by those caps.
+
+```python
+plans = client.list_tenant_plans()
+
+# The common case: you already billed the client, so create and activate at once.
+result = client.subscribe_tenant(
+    tenant_uuid=tenant.uuid,
+    plan_uuid=plans[0].uuid,
+    billing_cycle="monthly",
+    reference="invoice INV-2026-0042",   # kept in the platform's audit trail
+)
+result.subscription.is_active        # True
+result.provisioned.caps_created      # tenant cap + one per active user
+```
+
+Two-step instead, when the plan is requested before it is paid:
+
+```python
+pending = client.subscribe_tenant(
+    tenant_uuid=tenant.uuid, plan_uuid=plan.uuid, activate_now=False,
+)
+# ...collect payment in your own billing system...
+active = client.activate_tenant_subscription(
+    subscription_uuid=pending.subscription.uuid, reference="stripe pi_123",
+)
+```
+
+Activation is idempotent: calling it on an already-active subscription returns
+it unchanged with `provisioned` empty. `list_tenant_subscriptions()` returns
+every subscription across your tenants.
+
+The Node and Laravel packages expose the same four calls
+(`listTenantPlans`, `subscribeTenant`, `activateTenantSubscription`,
+`listTenantSubscriptions`).
 
 ## Federation in one page
 
