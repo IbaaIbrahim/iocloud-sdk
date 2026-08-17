@@ -213,20 +213,32 @@ Each package has its own GitHub Actions publishing workflow and is released by
 pushing an ecosystem-specific tag to this monorepo. Nothing else triggers a
 release — the workflows listen on `push: tags` only, never on a branch push.
 
-| Tag             | Workflow              | Destination                                       |
-| --------------- | --------------------- | ------------------------------------------------- |
-| `python-v0.4.0` | `publish-python.yml`  | PyPI `iocloud-sdk`                                |
-| `node-v0.4.0`   | `publish-node.yml`    | npm `@iocloud/sdk`                                |
-| `laravel-v0.4.0`| `release-laravel.yml` | `IbaaIbrahim/iocloud-laravel-sdk` -> Packagist     |
+| Tag pattern  | Workflow              | Destination                                    |
+| ------------ | --------------------- | ---------------------------------------------- |
+| `python-v*`  | `publish-python.yml`  | PyPI `iocloud-sdk`                             |
+| `node-v*`    | `publish-node.yml`    | npm `@iocloud/sdk`                             |
+| `laravel-v*` | `release-laravel.yml` | `IbaaIbrahim/iocloud-laravel-sdk` -> Packagist |
 
 The Python and npm workflows support trusted publishing. The Laravel workflow
 splits its self-contained package into a Composer-compatible repository, which
 Packagist can index automatically.
 
-The one-time registry setup each workflow depends on (PyPI trusted publisher,
-`NPM_TOKEN`, the `LARAVEL_SPLIT_TOKEN` secret and the Packagist hook) is in
-[PUBLISHING.md](PUBLISHING.md). It is already done for all three; you only
-revisit it when a token expires.
+Only the Laravel package has ever been released, so its credentials are proven
+and the other two are not. Treat the PyPI and npm halves of
+[PUBLISHING.md](PUBLISHING.md) as unverified — a first publish is where a
+missing trusted publisher or a wrong environment name surfaces.
+
+| Package               | Published on the registry | Setup state                                            |
+| --------------------- | ------------------------- | ------------------------------------------------------ |
+| `iocloud/laravel-sdk` | v0.3.0, v0.4.0            | confirmed: `LARAVEL_SPLIT_TOKEN` + Packagist hook work  |
+| `iocloud-sdk` (PyPI)  | never                     | unverified: needs the trusted publisher + `pypi` env    |
+| `@iocloud/sdk` (npm)  | never                     | unverified: needs `NPM_TOKEN` + `npm` env               |
+
+The three do not share a version counter. Laravel is published through 0.4.0, so
+its next release is 0.5.0; Python and npm have manifests at 0.4.0 that were never
+tagged, so `python-v0.4.0` and `node-v0.4.0` are still theirs to push. The
+snippets below write `0.5.0` throughout as a stand-in — substitute the version
+that package is actually going to.
 
 ### Releasing the Laravel package
 
@@ -241,17 +253,67 @@ git switch main && git pull
 cd packages/laravel && composer validate --strict && composer install && composer test && cd ../..
 
 # 3. Tag that commit and push the tag.
-git tag laravel-v0.4.0
-git push origin laravel-v0.4.0
+git tag laravel-v0.5.0
+git push origin laravel-v0.5.0
 ```
 
 The workflow then re-runs the package tests, `git subtree split --prefix=packages/laravel`
-into `IbaaIbrahim/iocloud-laravel-sdk`, and pushes a bare `v0.4.0` tag there;
+into `IbaaIbrahim/iocloud-laravel-sdk`, and pushes a bare `v0.5.0` tag there;
 Packagist's GitHub hook indexes it within a minute or two. The split is needed
 because Packagist expects `composer.json` at the repository root.
 
-Verify with `gh run list --workflow=release-laravel.yml -L 3`, then
-`composer show iocloud/laravel-sdk --all | head` from any project.
+Verify the run, then ask Packagist directly — this needs no project that already
+requires the package:
+
+```bash
+gh run list --workflow=release-laravel.yml -L 3
+curl -s https://repo.packagist.org/p2/iocloud/laravel-sdk.json \
+  | python -c "import json,sys; p=json.load(sys.stdin)['packages']['iocloud/laravel-sdk']; print([v['version'] for v in p])"
+```
+
+### Releasing the Python package
+
+`pyproject.toml` carries the version and the workflow never compares it with the
+tag, so the **manifest** decides what is published: a `python-v0.5.0` tag on a
+manifest still reading 0.4.0 re-publishes 0.4.0, which PyPI then rejects as a
+duplicate.
+
+```bash
+# 1. Bump packages/python/pyproject.toml -> version = "0.5.0", and commit it.
+
+# 2. Run the suite yourself. publish-python.yml has no test step — it builds and
+#    uploads — so nothing else gates this release.
+python -m unittest discover -s packages/python/tests   # after the editable install above
+
+# 3. Tag the commit you just tested and push.
+git push origin main
+git tag python-v0.5.0 && git push origin python-v0.5.0
+```
+
+`publish-python.yml` builds an sdist and a wheel, then uploads with
+`pypa/gh-action-pypi-publish` from the `pypi` environment via trusted
+publishing, so no token is stored in the repository.
+
+### Releasing the npm package
+
+Use `npm version` rather than editing `package.json`: it updates the lockfile in
+the same step. Hand-editing leaves `package-lock.json` behind, which is how it
+sat at 0.2.0 through two manifest bumps before anyone noticed.
+
+```bash
+cd packages/node
+npm version 0.5.0 --no-git-tag-version    # package.json AND package-lock.json
+npm test                                  # builds first, then runs the listed suites
+cd ../..
+git commit -am "chore: release node 0.5.0" && git push origin main
+git tag node-v0.5.0 && git push origin node-v0.5.0
+```
+
+`publish-node.yml` has no test step either, but `npm publish` triggers the
+package's own `prepublishOnly` hook (`npm test && npm run build`), so the suite
+does gate the upload. One catch: the `test` script **lists its test files
+explicitly** instead of globbing, so a new test file that nobody added to it
+never runs — locally or in CI.
 
 ### Rules that apply to every release
 

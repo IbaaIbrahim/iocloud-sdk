@@ -1,5 +1,10 @@
 # IOCloud Python SDK
 
+> **Not on PyPI yet.** `iocloud-sdk` has never been published — no `python-v*`
+> tag has been pushed — so the command below will not resolve. Until the first
+> release, install from a checkout with the editable command further down. See
+> [Releases](../../README.md#releases).
+
 Install the published dependency:
 
 ```bash

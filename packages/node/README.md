@@ -1,5 +1,10 @@
 # IOCloud Node.js SDK
 
+> **Not on npm yet.** `@iocloud/sdk` has never been published — no `node-v*` tag
+> has been pushed — so the command below will not resolve. Until the first
+> release, depend on `packages/node` from a checkout. See
+> [Releases](../../README.md#releases).
+
 ```bash
 npm install @iocloud/sdk
 ```

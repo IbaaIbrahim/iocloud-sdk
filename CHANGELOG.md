@@ -131,7 +131,12 @@ per login, and drive the RFC 8693 exchange. All of it is now SDK surface.
   configuration. Trimming dropped a PEM's trailing newline and would have
   corrupted a passphrase with leading or trailing whitespace.
 
-## 0.2.0 - Unreleased
+## 0.2.0 - never released under its own tag
+
+No `laravel-v0.2.0`, `python-v0.2.0`, or `node-v0.2.0` tag was ever pushed. The
+Laravel package shipped this work inside v0.3.0, which was cut from a commit well
+above it; for Python and Node it forms part of their first release, 0.4.0. The
+section is kept because it is the only record of the initial multi-package split.
 
 ### Python
 
