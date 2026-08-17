@@ -257,9 +257,21 @@ Verify with `gh run list --workflow=release-laravel.yml -L 3`, then
 
 - **The tag decides what ships, not `main`.** The tag pins one commit; work
   committed after it is not in the release. Tag the commit you actually tested.
-- **Never move or re-push a tag.** Registries treat a published version as
-  immutable and Packagist will keep serving the first thing it indexed. If a
-  release is wrong, fix forward with the next patch version.
+- **Never move a tag once the publish step has run.** Registries treat a
+  published version as immutable, and Packagist keeps serving the first thing it
+  indexed. If a *published* release is wrong, fix forward with the next patch
+  version. Before anything is published — a run that died in setup, tests, or
+  the split — the version does not exist yet anywhere, so re-tagging is the
+  correct fix rather than burning a version number.
+- **A workflow fix needs a new tag, not a re-run.** A tag-triggered run reads
+  the workflow file from the tagged commit, so editing `release-laravel.yml` on
+  `main` has no effect on `gh run rerun` of an existing tag. Commit the fix,
+  then move the tag onto it (subject to the rule above).
+- **Distinguish a transient failure from a real one before re-tagging.** A
+  `429`/`503` from `codeload.github.com` is GitHub rate-limiting the runner, not
+  a broken release; `gh run rerun <id> --failed` is the right response. If it
+  recurs every run, the job is missing `COMPOSER_AUTH` — see the comment in
+  `release-laravel.yml`.
 - **Bump the manifest first for Python and npm.** `pyproject.toml` and
   `package.json` carry hard-coded versions, and a tag that disagrees with the
   manifest publishes the manifest's version. Laravel has no such field.

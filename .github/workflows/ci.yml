@@ -20,6 +20,15 @@ on:
       - "openapi/**"
       - ".github/workflows/ci.yml"
 
+# Set once for every job: the PHP jobs need it and the others ignore it. Composer
+# fetches --prefer-dist archives from codeload.github.com, which allows only 60
+# anonymous requests an hour per IP — shared runner IPs exhaust that between jobs
+# and `composer install` then fails with "could not be downloaded (HTTP/2 429)"
+# on whichever dependency it reaches next. Authenticating raises the ceiling to
+# 5000/hour. See the same block in release-laravel.yml.
+env:
+  COMPOSER_AUTH: '{"github-oauth":{"github.com":"${{ secrets.GITHUB_TOKEN }}"}}'
+
 jobs:
   python:
     runs-on: ubuntu-latest

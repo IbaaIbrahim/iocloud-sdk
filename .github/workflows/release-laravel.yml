@@ -14,6 +14,16 @@ jobs:
     defaults:
       run:
         working-directory: packages/laravel
+    env:
+      # Composer fetches --prefer-dist archives for GitHub-hosted packages from
+      # codeload.github.com, which allows 60 requests an hour per IP when the
+      # request is anonymous. Shared runner IPs exhaust that between jobs, so an
+      # unauthenticated install fails with "file could not be downloaded
+      # (HTTP/2 429)" on whichever dependency it happens to reach next — a
+      # different one each run, which makes it look like a flaky dependency
+      # rather than a rate limit. The job's own GITHUB_TOKEN raises the ceiling
+      # to 5000/hour and needs no extra permission beyond contents: read.
+      COMPOSER_AUTH: '{"github-oauth":{"github.com":"${{ secrets.GITHUB_TOKEN }}"}}'
     steps:
       - uses: actions/checkout@v5
         with:
