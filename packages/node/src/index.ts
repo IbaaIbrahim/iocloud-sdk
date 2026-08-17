@@ -24,11 +24,14 @@ export {
 } from "./errors.js";
 export type {
   ActivateTenantSubscriptionInput,
+  ActivateTenantTopupInput,
   CreateIdentityProviderInput,
   CreateTenantInput,
+  CreateTopupPackageInput,
   ExternalTenantMapping,
   FederatedLoginInput,
   FederatedSession,
+  GrantTenantTopupInput,
   IdentityProvider,
   IssueTenantTokenInput,
   JsonWebKey,
@@ -38,6 +41,7 @@ export type {
   PlanSubscription,
   ProvisionedBalance,
   ProvisionedCap,
+  ProvisionedTopup,
   SetUserPersonaInput,
   SubjectTokenClaimNames,
   SubscribeTenantInput,
@@ -46,4 +50,9 @@ export type {
   TenantPlan,
   TenantSubscription,
   TenantToken,
+  TenantTopup,
+  TopupPackage,
+  TopupPackagePlan,
+  TopupPurchase,
+  UpdateTopupPackageInput,
 } from "./models.js";

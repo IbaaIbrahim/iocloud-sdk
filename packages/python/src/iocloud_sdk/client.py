@@ -22,6 +22,9 @@ from .models import (
     TenantPlan,
     TenantSubscription,
     TenantToken,
+    TenantTopup,
+    TopupPackage,
+    TopupPurchase,
 )
 
 if TYPE_CHECKING:  # Signing needs the optional federation extra; keep it lazy.
@@ -204,6 +207,157 @@ class IOCloudClient:
         return [
             PlanSubscription.from_payload(item)
             for item in data.get("subscriptions", [])
+        ]
+
+    # ------------------------------------------------------------------
+    # Top-up packages: the credit bundles you sell your tenants
+    # ------------------------------------------------------------------
+
+    def list_topup_packages(
+        self, *, page: int = 1, limit: int = 25
+    ) -> list[TopupPackage]:
+        """List the top-up packages this partner offers its tenants.
+
+        These are the packages you authored. What the *platform* sells you is
+        a separate catalogue, reached through the dashboard.
+        """
+        data = self._partner_request(
+            "GET",
+            "/v1/partner/topup-packages",
+            params={"page": page, "limit": limit},
+        )
+        return [TopupPackage.from_payload(item) for item in data.get("list", [])]
+
+    def create_topup_package(
+        self,
+        *,
+        name: str,
+        credits: int,
+        price_cents: int,
+        validity_days: int | None = None,
+        plan_uuids: Sequence[UUID | str] = (),
+    ) -> TopupPackage:
+        """Create a credit bundle your tenants can buy.
+
+        ``plan_uuids`` names your own tenant plans and is what lets two plans
+        carry different offers: a package scoped to Bronze is invisible to a
+        tenant on Silver. Pass none to offer it to every tenant.
+
+        ``validity_days`` is how long the purchased credits stay spendable;
+        omit it for credits that never expire.
+        """
+        data = self._partner_request(
+            "POST",
+            "/v1/partner/topup-packages",
+            json={
+                "name": name,
+                "credits": credits,
+                "price_cents": price_cents,
+                "validity_days": validity_days,
+                "plan_uuids": [str(plan_uuid) for plan_uuid in plan_uuids],
+            },
+        )
+        return TopupPackage.from_payload(data["package"])
+
+    def update_topup_package(
+        self,
+        *,
+        package_uuid: UUID | str,
+        name: str | None = None,
+        credits: int | None = None,
+        price_cents: int | None = None,
+        validity_days: int | None = None,
+        status: str | None = None,
+        plan_uuids: Sequence[UUID | str] | None = None,
+    ) -> TopupPackage:
+        """Update one of your packages. Omitted fields are left unchanged.
+
+        Editing changes what the package sells next, never what it already
+        sold: existing purchases keep the credits snapshotted at purchase
+        time. ``status="inactive"`` withdraws it from the catalogue.
+
+        ``plan_uuids=None`` keeps the current scoping; ``plan_uuids=[]``
+        clears it, putting the package back on offer to every tenant.
+        """
+        payload: dict[str, Any] = {
+            key: value
+            for key, value in (
+                ("name", name),
+                ("credits", credits),
+                ("price_cents", price_cents),
+                ("validity_days", validity_days),
+                ("status", status),
+            )
+            if value is not None
+        }
+        if plan_uuids is not None:
+            payload["plan_uuids"] = [str(plan_uuid) for plan_uuid in plan_uuids]
+        data = self._partner_request(
+            "PATCH", f"/v1/partner/topup-packages/{package_uuid}", json=payload
+        )
+        return TopupPackage.from_payload(data["package"])
+
+    def grant_tenant_topup(
+        self,
+        *,
+        tenant_uuid: UUID | str,
+        package_uuid: UUID | str,
+        activate_now: bool = True,
+        reference: str | None = None,
+    ) -> TenantTopup:
+        """Sell one of your tenants a top-up.
+
+        Same shape as :meth:`subscribe_tenant`, and for the same reason:
+        tenants are your clients and never pay this platform, so you own both
+        halves. With ``activate_now`` (the default) the credits are spendable
+        when this returns — a ``topup`` credit pool owned by the tenant, drawn
+        on before your own balance.
+
+        Pass ``activate_now=False`` to record the purchase first (status
+        ``pending``) and call :meth:`activate_tenant_topup` once the client
+        has paid. ``reference`` is free text kept in the platform's audit
+        trail (invoice number, "goodwill credit").
+
+        The package must be one that tenant is actually offered, so a
+        plan-scoped package cannot be granted to a tenant on the wrong plan.
+        """
+        data = self._partner_request(
+            "POST",
+            "/v1/partner/topups/tenant/purchases",
+            json={
+                "tenant_uuid": str(tenant_uuid),
+                "package_uuid": str(package_uuid),
+                "activate_now": activate_now,
+                "reference": reference,
+            },
+        )
+        return TenantTopup.from_payload(data)
+
+    def activate_tenant_topup(
+        self,
+        *,
+        transaction_uuid: UUID | str,
+        reference: str | None = None,
+    ) -> TenantTopup:
+        """Activate a pending tenant top-up and provision its credit pool.
+
+        Call this after collecting payment in your own billing system.
+        Idempotent: activating an already-active purchase returns it unchanged
+        with ``provisioned`` set to None, so a retry never grants the credits
+        twice.
+        """
+        data = self._partner_request(
+            "POST",
+            f"/v1/partner/topups/tenant/purchases/{transaction_uuid}/activate",
+            json={"reference": reference},
+        )
+        return TenantTopup.from_payload(data)
+
+    def list_tenant_topups(self) -> list[TopupPurchase]:
+        """List every top-up bought by one of this partner's tenants."""
+        data = self._partner_request("GET", "/v1/partner/topups/tenant/purchases")
+        return [
+            TopupPurchase.from_payload(item) for item in data.get("purchases", [])
         ]
 
     def create_identity_provider(

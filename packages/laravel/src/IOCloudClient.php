@@ -16,6 +16,9 @@ use IOCloud\Laravel\Data\TenantCredential;
 use IOCloud\Laravel\Data\TenantPlan;
 use IOCloud\Laravel\Data\TenantSubscription;
 use IOCloud\Laravel\Data\TenantToken;
+use IOCloud\Laravel\Data\TenantTopup;
+use IOCloud\Laravel\Data\TopupPackage;
+use IOCloud\Laravel\Data\TopupPurchase;
 use IOCloud\Laravel\Exceptions\IOCloudAPIException;
 use IOCloud\Laravel\Exceptions\IOCloudAuthenticationException;
 use IOCloud\Laravel\Exceptions\IOCloudConfigurationException;
@@ -187,6 +190,181 @@ final class IOCloudClient
         }
 
         return $subscriptions;
+    }
+
+    /**
+     * List the top-up packages this partner offers its tenants.
+     *
+     * These are the packages you authored. What the *platform* sells you is a
+     * separate catalogue, reached through the dashboard.
+     *
+     * @return list<TopupPackage>
+     */
+    public function listTopupPackages(int $page = 1, int $limit = 25): array
+    {
+        $data = $this->partnerRequest(
+            'GET',
+            "/v1/partner/topup-packages?page={$page}&limit={$limit}",
+            null,
+        );
+
+        $packages = [];
+        foreach ((array) ($data['list'] ?? []) as $package) {
+            $packages[] = TopupPackage::fromPayload((array) $package);
+        }
+
+        return $packages;
+    }
+
+    /**
+     * Create a credit bundle your tenants can buy.
+     *
+     * `$planUuids` names your own tenant plans and is what lets two plans carry
+     * different offers: a package scoped to Bronze is invisible to a tenant on
+     * Silver. Pass none to offer it to every tenant. `$validityDays` is how
+     * long the purchased credits stay spendable; null means they never expire.
+     *
+     * @param list<string> $planUuids
+     */
+    public function createTopupPackage(
+        string $name,
+        int $credits,
+        int $priceCents,
+        ?int $validityDays = null,
+        array $planUuids = [],
+    ): TopupPackage {
+        $data = $this->partnerRequest(
+            'POST',
+            '/v1/partner/topup-packages',
+            [
+                'name' => $name,
+                'credits' => $credits,
+                'price_cents' => $priceCents,
+                'validity_days' => $validityDays,
+                'plan_uuids' => $planUuids,
+            ],
+        );
+
+        return TopupPackage::fromPayload((array) $data['package']);
+    }
+
+    /**
+     * Update one of your packages. Null fields are left unchanged.
+     *
+     * Editing changes what the package sells next, never what it already sold:
+     * existing purchases keep the credits snapshotted at purchase time.
+     * `$status = 'inactive'` withdraws it from the catalogue.
+     *
+     * `$planUuids = null` keeps the current scoping; `[]` clears it, putting
+     * the package back on offer to every tenant.
+     *
+     * @param list<string>|null $planUuids
+     */
+    public function updateTopupPackage(
+        string $packageUuid,
+        ?string $name = null,
+        ?int $credits = null,
+        ?int $priceCents = null,
+        ?int $validityDays = null,
+        ?string $status = null,
+        ?array $planUuids = null,
+    ): TopupPackage {
+        $body = array_filter(
+            [
+                'name' => $name,
+                'credits' => $credits,
+                'price_cents' => $priceCents,
+                'validity_days' => $validityDays,
+                'status' => $status,
+            ],
+            static fn ($value) => $value !== null,
+        );
+        if ($planUuids !== null) {
+            $body['plan_uuids'] = $planUuids;
+        }
+
+        $data = $this->partnerRequest(
+            'PATCH',
+            "/v1/partner/topup-packages/{$packageUuid}",
+            $body,
+        );
+
+        return TopupPackage::fromPayload((array) $data['package']);
+    }
+
+    /**
+     * Sell one of your tenants a top-up.
+     *
+     * Same shape as {@see subscribeTenant()}, and for the same reason: tenants
+     * are your clients and never pay this platform, so you own both halves.
+     * With `$activateNow` (the default) the credits are spendable when this
+     * returns — a top-up credit pool owned by the tenant, drawn on before your
+     * own balance.
+     *
+     * Pass `$activateNow = false` to record the purchase first (status
+     * `pending`) and call {@see activateTenantTopup()} once the client has
+     * paid. The package must be one that tenant is actually offered, so a
+     * plan-scoped package cannot be granted to a tenant on the wrong plan.
+     */
+    public function grantTenantTopup(
+        string $tenantUuid,
+        string $packageUuid,
+        bool $activateNow = true,
+        ?string $reference = null,
+    ): TenantTopup {
+        $data = $this->partnerRequest(
+            'POST',
+            '/v1/partner/topups/tenant/purchases',
+            [
+                'tenant_uuid' => $tenantUuid,
+                'package_uuid' => $packageUuid,
+                'activate_now' => $activateNow,
+                'reference' => $reference,
+            ],
+        );
+
+        return TenantTopup::fromPayload($data);
+    }
+
+    /**
+     * Activate a pending tenant top-up and provision its credit pool.
+     *
+     * Call this after collecting payment in your own billing system.
+     * Idempotent: activating an already-active purchase returns it unchanged
+     * with `provisioned` null, so a retry never grants the credits twice.
+     */
+    public function activateTenantTopup(
+        string $transactionUuid,
+        ?string $reference = null,
+    ): TenantTopup {
+        $data = $this->partnerRequest(
+            'POST',
+            "/v1/partner/topups/tenant/purchases/{$transactionUuid}/activate",
+            ['reference' => $reference],
+        );
+
+        return TenantTopup::fromPayload($data);
+    }
+
+    /**
+     * List every top-up bought by one of this partner's tenants.
+     *
+     * @return list<TopupPurchase>
+     */
+    public function listTenantTopups(): array
+    {
+        $data = $this->partnerRequest(
+            'GET',
+            '/v1/partner/topups/tenant/purchases',
+            null,
+        );
+
+        $purchases = [];
+        foreach ((array) ($data['purchases'] ?? []) as $purchase) {
+            $purchases[] = TopupPurchase::fromPayload((array) $purchase);
+        }
+
+        return $purchases;
     }
 
     /**

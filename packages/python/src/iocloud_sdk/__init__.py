@@ -24,12 +24,17 @@ from .models import (
     PartnerToken,
     PlanSubscription,
     ProvisionedBalance,
+    ProvisionedTopup,
     SubjectTokenClaimNames,
     Tenant,
     TenantCredential,
     TenantPlan,
     TenantSubscription,
     TenantToken,
+    TenantTopup,
+    TopupPackage,
+    TopupPackagePlan,
+    TopupPurchase,
 )
 
 __all__ = [
@@ -46,6 +51,7 @@ __all__ = [
     "PartnerToken",
     "PlanSubscription",
     "ProvisionedBalance",
+    "ProvisionedTopup",
     "SubjectTokenClaimNames",
     "TOKEN_EXCHANGE_GRANT_TYPE",
     "Tenant",
@@ -53,4 +59,8 @@ __all__ = [
     "TenantPlan",
     "TenantSubscription",
     "TenantToken",
+    "TenantTopup",
+    "TopupPackage",
+    "TopupPackagePlan",
+    "TopupPurchase",
 ]

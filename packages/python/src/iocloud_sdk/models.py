@@ -335,3 +335,154 @@ class TenantSubscription:
                 else None
             ),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class TopupPackagePlan:
+    """One plan a top-up package is offered to."""
+
+    plan_type: str
+    plan_uuid: UUID
+    plan_name: str
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "TopupPackagePlan":
+        return cls(
+            plan_type=str(payload["plan_type"]),
+            plan_uuid=UUID(str(payload["plan_uuid"])),
+            plan_name=str(payload["plan_name"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TopupPackage:
+    """A credit bundle the partner sells to its own tenants.
+
+    ``plans`` is what makes the offer differ per plan: empty means every
+    tenant sees the package, and one entry confines it to that tenant plan.
+    ``validity_days`` is None when the purchased credits never expire.
+    """
+
+    uuid: UUID
+    name: str
+    credits: int
+    price_cents: int
+    validity_days: int | None
+    status: str
+    audience: str | None
+    plans: tuple[TopupPackagePlan, ...]
+
+    @property
+    def is_active(self) -> bool:
+        return self.status == "active"
+
+    @property
+    def is_offered_to_every_plan(self) -> bool:
+        return not self.plans
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "TopupPackage":
+        validity_days = payload.get("validity_days")
+        audience = payload.get("audience")
+        return cls(
+            uuid=UUID(str(payload["uuid"])),
+            name=str(payload["name"]),
+            credits=int(payload["credits"]),
+            price_cents=int(payload["price_cents"]),
+            validity_days=int(validity_days) if validity_days is not None else None,
+            status=str(payload["status"]),
+            audience=str(audience) if audience else None,
+            plans=tuple(
+                TopupPackagePlan.from_payload(item)
+                for item in payload.get("plans") or ()
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TopupPurchase:
+    """One tenant's purchase of a top-up package.
+
+    ``credits`` is snapshotted at purchase time, so editing the package later
+    never changes what an existing purchase granted. ``valid_to`` is None when
+    the credits never expire.
+    """
+
+    uuid: UUID
+    tenant_uuid: UUID
+    tenant_name: str
+    package_uuid: UUID | None
+    package_name: str | None
+    credits: int
+    status: str
+    valid_from: datetime | None
+    valid_to: datetime | None
+    created_at: datetime
+
+    @property
+    def is_active(self) -> bool:
+        return self.status == "active"
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "TopupPurchase":
+        package_uuid = payload.get("package_uuid")
+        package_name = payload.get("package_name")
+        valid_from = payload.get("valid_from")
+        valid_to = payload.get("valid_to")
+        return cls(
+            uuid=UUID(str(payload["uuid"])),
+            tenant_uuid=UUID(str(payload["tenant_uuid"])),
+            tenant_name=str(payload["tenant_name"]),
+            package_uuid=UUID(str(package_uuid)) if package_uuid else None,
+            package_name=str(package_name) if package_name else None,
+            credits=int(payload["credits"]),
+            status=str(payload["status"]),
+            valid_from=_datetime(valid_from) if valid_from else None,
+            valid_to=_datetime(valid_to) if valid_to else None,
+            created_at=_datetime(payload["created_at"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ProvisionedTopup:
+    """The credit pool an activated top-up created.
+
+    Unlike a tenant plan — which provisions caps against the partner's pool —
+    a tenant top-up creates a pool the tenant owns outright, spent before the
+    partner's own credits.
+    """
+
+    pool_created: bool
+    pool_credits: int
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "ProvisionedTopup":
+        return cls(
+            pool_created=bool(payload.get("pool_created", False)),
+            pool_credits=int(payload.get("pool_credits", 0)),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TenantTopup:
+    """A tenant's top-up plus whatever its activation provisioned.
+
+    ``provisioned`` is None when nothing was provisioned by this call — the
+    purchase is still pending, or an already-active one was activated again
+    (activation is idempotent).
+    """
+
+    purchase: TopupPurchase
+    provisioned: ProvisionedTopup | None
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "TenantTopup":
+        provisioning = payload.get("provisioning")
+        return cls(
+            purchase=TopupPurchase.from_payload(payload["purchase"]),
+            provisioned=(
+                ProvisionedTopup.from_payload(provisioning)
+                if isinstance(provisioning, dict)
+                else None
+            ),
+        )

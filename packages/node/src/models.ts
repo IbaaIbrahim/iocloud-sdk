@@ -227,3 +227,105 @@ export interface ActivateTenantSubscriptionInput {
   subscriptionUuid: string;
   reference?: string;
 }
+
+/** One plan a top-up package is offered to. */
+export interface TopupPackagePlan {
+  planType: "partner_plans" | "tenant_plans";
+  planUuid: string;
+  planName: string;
+}
+
+/**
+ * A credit bundle the partner sells to its own tenants.
+ *
+ * `plans` is what makes the offer differ per plan: empty means every tenant
+ * sees the package, and one entry confines it to that tenant plan.
+ * `validityDays` is null when the purchased credits never expire.
+ */
+export interface TopupPackage {
+  uuid: string;
+  name: string;
+  credits: number;
+  priceCents: number;
+  validityDays: number | null;
+  status: string;
+  audience: string | null;
+  plans: TopupPackagePlan[];
+}
+
+/**
+ * One tenant's purchase of a top-up package.
+ *
+ * `credits` is snapshotted at purchase time, so editing the package later
+ * never changes what an existing purchase granted. `validTo` is null when the
+ * credits never expire.
+ */
+export interface TopupPurchase {
+  uuid: string;
+  tenantUuid: string;
+  tenantName: string;
+  packageUuid: string | null;
+  packageName: string | null;
+  credits: number;
+  status: string;
+  validFrom: Date | null;
+  validTo: Date | null;
+  createdAt: Date;
+}
+
+/**
+ * The credit pool an activated top-up created. Unlike a tenant plan — which
+ * provisions caps against the partner's pool — a tenant top-up creates a pool
+ * the tenant owns outright, spent before the partner's own credits.
+ */
+export interface ProvisionedTopup {
+  poolCreated: boolean;
+  poolCredits: number;
+}
+
+/**
+ * A tenant's top-up plus whatever its activation provisioned.
+ *
+ * `provisioned` is null when this call provisioned nothing — the purchase is
+ * still pending, or an already-active one was activated again (activation is
+ * idempotent).
+ */
+export interface TenantTopup {
+  purchase: TopupPurchase;
+  provisioned: ProvisionedTopup | null;
+}
+
+export interface CreateTopupPackageInput {
+  name: string;
+  credits: number;
+  priceCents: number;
+  /** Omit for credits that never expire. */
+  validityDays?: number | null;
+  /** Your own tenant plans; omit to offer the package to every tenant. */
+  planUuids?: string[];
+}
+
+export interface UpdateTopupPackageInput {
+  packageUuid: string;
+  name?: string;
+  credits?: number;
+  priceCents?: number;
+  validityDays?: number | null;
+  status?: "active" | "inactive";
+  /** Omit to keep the current scoping; `[]` clears it. */
+  planUuids?: string[];
+}
+
+export interface GrantTenantTopupInput {
+  tenantUuid: string;
+  packageUuid: string;
+  /** Defaults to true: grant AND activate in one call. */
+  activateNow?: boolean;
+  /** Free text kept in the platform's audit trail (invoice number, note). */
+  reference?: string;
+}
+
+export interface ActivateTenantTopupInput {
+  transactionUuid: string;
+  reference?: string;
+}

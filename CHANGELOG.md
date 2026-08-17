@@ -3,7 +3,32 @@
 All notable SDK changes are documented here. Each ecosystem can be released
 independently, so entries identify the affected packages.
 
-## 0.3.0 - Unreleased
+## 0.4.0 - 2026-08-17
+
+### Shared — top-up packages and tenant top-ups
+
+- Added `listTopupPackages`, `createTopupPackage`, `updateTopupPackage`,
+  `grantTenantTopup`, `activateTenantTopup`, and `listTenantTopups` to all
+  three packages, with typed `TopupPackage`, `TopupPackagePlan`,
+  `TopupPurchase`, `ProvisionedTopup`, and `TenantTopup` models.
+- A partner now authors its own top-up catalogue: previously only the platform
+  owner could define packages, so a partner had no way to sell its tenants
+  credits on top of their plan.
+- `plan_uuids` scopes a package to particular tenant plans, so Bronze and
+  Silver can carry different top-up menus. A package with no plans is offered
+  to every tenant, which is what an unscoped package has always been. The
+  platform enforces the scoping on the grant as well as in the listing, so a
+  plan-scoped package cannot be granted to a tenant on the wrong plan.
+- `grantTenantTopup` defaults to `activate_now`, so one call both records the
+  purchase and provisions the credits — a pool the *tenant* owns, spent before
+  the partner's own balance. That is the difference from a plan, which
+  provisions caps against the partner's pool.
+- Activation is the partner's call for the same reason it is for plans, is
+  idempotent, and records the optional `reference` in the audit trail.
+- Editing a package changes what it sells next, never what it already sold:
+  `credits` is snapshotted onto each purchase. On update, omitting `plan_uuids`
+  keeps the current scoping and `[]` clears it.
+- Documented the paths and payloads in `openapi/iocloud.yaml`.
 
 ### Shared — tenant plans and subscriptions
 
@@ -18,6 +43,12 @@ independently, so entries identify the affected packages.
   tenant-facing payment endpoint. Activation is idempotent, and the optional
   `reference` is recorded in the platform's audit trail.
 - Documented the paths and payloads in `openapi/iocloud.yaml`.
+
+## 0.3.0 - 2026-07-29
+
+Released for Laravel only, as `laravel-v0.3.0` (Packagist `iocloud/laravel-sdk`
+v0.3.0). The Python and Node packages carry the same code but were never tagged,
+so 0.4.0 is their first published release and includes everything below.
 
 Partner-side federation moves into the SDK. Previously a partner had to run its
 own OIDC issuer — generate an RSA keypair, serve a JWKS, hand-roll a signed JWT

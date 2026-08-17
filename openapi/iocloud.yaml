@@ -255,6 +255,187 @@ paths:
                 $ref: '#/components/schemas/Error'
         default:
           $ref: '#/components/responses/ApiError'
+  /v1/partner/topup-packages:
+    get:
+      operationId: listTopupPackages
+      summary: List the top-up packages this partner offers its tenants.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+      responses:
+        '200':
+          description: Packages listed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopupPackageListResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        default:
+          $ref: '#/components/responses/ApiError'
+    post:
+      operationId: createTopupPackage
+      summary: Create a credit bundle this partner's tenants can buy.
+      description: >-
+        The definer and the audience are taken from the authenticated partner,
+        never from the body: a partner sells top-ups to its own tenants.
+        plan_uuids names the partner's own tenant plans and is what lets two
+        plans carry different offers — a package scoped to Bronze is invisible
+        to a tenant on Silver. An empty list offers it to every tenant.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTopupPackageRequest'
+      responses:
+        '201':
+          description: Package created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopupPackageResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '404':
+          description: One of the named plans is not one of this partner's tenant plans.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        default:
+          $ref: '#/components/responses/ApiError'
+  /v1/partner/topup-packages/{package_uuid}:
+    patch:
+      operationId: updateTopupPackage
+      summary: Update one of this partner's own top-up packages.
+      description: >-
+        Omitted fields are left unchanged. Editing changes what the package
+        sells next, never what it already sold: existing purchases keep the
+        credits snapshotted at purchase time. Omitting plan_uuids keeps the
+        current scoping; an empty array clears it.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PackageUuid'
+      responses:
+        '200':
+          description: Package updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopupPackageResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '404':
+          description: No such package for this partner, or an unknown plan.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        default:
+          $ref: '#/components/responses/ApiError'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTopupPackageRequest'
+  /v1/partner/topups/tenant/purchases:
+    get:
+      operationId: listTenantTopups
+      summary: List every top-up bought by one of this partner's tenants.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Purchases listed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopupPurchaseListResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        default:
+          $ref: '#/components/responses/ApiError'
+    post:
+      operationId: grantTenantTopup
+      summary: Sell one of this partner's tenants a top-up.
+      description: >-
+        Tenants are the partner's clients and never pay this platform, so the
+        partner owns both halves. With activate_now the credits are spendable
+        immediately — a quota.credit_pools row of type topup owned by the
+        tenant, spent before the partner's own balance. The package must be one
+        that tenant is actually offered, so a plan-scoped package cannot be
+        granted to a tenant on the wrong plan.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GrantTenantTopupRequest'
+      responses:
+        '201':
+          description: Purchase created (and activated when requested).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantTopupResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '404':
+          description: The tenant or the package was not found for this partner.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        default:
+          $ref: '#/components/responses/ApiError'
+  /v1/partner/topups/tenant/purchases/{transaction_uuid}/activate:
+    post:
+      operationId: activateTenantTopup
+      summary: Mark a tenant top-up paid and provision its credit pool.
+      description: >-
+        The fallback for money collected outside this platform: the partner
+        billed its client in its own system. Runs the same activation path a
+        gateway-verified payment would, leaving payment_transaction_uuid null.
+        Idempotent — activating an already-active purchase returns it with
+        provisioning null, so a retry never grants the credits twice.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/TopupTransactionUuid'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManualActivationRequest'
+      responses:
+        '200':
+          description: Purchase activated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantTopupResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '404':
+          description: No such purchase for one of this partner's tenants.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        default:
+          $ref: '#/components/responses/ApiError'
   /v1/federation/token:
     post:
       operationId: exchangeSubjectToken
@@ -352,6 +533,16 @@ components:
       schema: { type: string, format: uuid }
     SubscriptionUuid:
       name: subscription_uuid
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PackageUuid:
+      name: package_uuid
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    TopupTransactionUuid:
+      name: transaction_uuid
       in: path
       required: true
       schema: { type: string, format: uuid }
@@ -552,6 +743,181 @@ components:
               nullable: true
               allOf:
                 - $ref: '#/components/schemas/ProvisionedBalance'
+              description: Null when this call provisioned nothing.
+    TopupPackagePlan:
+      type: object
+      required: [plan_type, plan_uuid, plan_name]
+      properties:
+        plan_type: { type: string, enum: [partner_plans, tenant_plans] }
+        plan_uuid: { type: string, format: uuid }
+        plan_name: { type: string }
+    TopupPackage:
+      type: object
+      required: [uuid, name, credits, price_cents, status]
+      properties:
+        uuid: { type: string, format: uuid }
+        name: { type: string, maxLength: 255 }
+        credits:
+          type: integer
+          minimum: 1
+          description: Snapshotted onto each purchase, so later edits never change it.
+        price_cents: { type: integer, minimum: 0 }
+        validity_days:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: Null when the purchased credits never expire.
+        definer_type:
+          type: string
+          nullable: true
+          enum: [partners, tenants]
+          description: Who sells the package; null for a platform-wide one.
+        audience:
+          type: string
+          nullable: true
+          enum: [partners, tenants]
+          description: >-
+            Who it is for. Null is unrestricted — whoever the definer scope
+            reaches. A partner's own packages always read 'tenants'.
+        status: { type: string, enum: [active, inactive] }
+        plans:
+          type: array
+          description: >-
+            The plans whose subscribers may buy this package. Empty means every
+            subscriber, which is what an unscoped package is.
+          items: { $ref: '#/components/schemas/TopupPackagePlan' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    TopupPackageListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [list, pagination]
+          properties:
+            list:
+              type: array
+              items: { $ref: '#/components/schemas/TopupPackage' }
+            pagination: { $ref: '#/components/schemas/Pagination' }
+    TopupPackageResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [package]
+          properties:
+            package: { $ref: '#/components/schemas/TopupPackage' }
+    CreateTopupPackageRequest:
+      type: object
+      required: [name, credits, price_cents]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 255 }
+        credits: { type: integer, minimum: 1 }
+        price_cents: { type: integer, minimum: 0 }
+        validity_days:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: Omit for credits that never expire.
+        plan_uuids:
+          type: array
+          default: []
+          description: >-
+            The partner's own tenant plans whose subscribers may buy this
+            package. Empty offers it to all of its tenants.
+          items: { type: string, format: uuid }
+    UpdateTopupPackageRequest:
+      type: object
+      properties:
+        name: { type: string, minLength: 1, maxLength: 255 }
+        credits: { type: integer, minimum: 1 }
+        price_cents: { type: integer, minimum: 0 }
+        validity_days: { type: integer, minimum: 1, nullable: true }
+        status: { type: string, enum: [active, inactive] }
+        plan_uuids:
+          type: array
+          nullable: true
+          description: Omit to keep the current scoping; [] to clear it.
+          items: { type: string, format: uuid }
+    TopupPurchase:
+      type: object
+      required: [uuid, tenant_uuid, tenant_name, credits, status, created_at]
+      properties:
+        uuid: { type: string, format: uuid }
+        tenant_uuid: { type: string, format: uuid }
+        tenant_name: { type: string }
+        package_uuid: { type: string, format: uuid, nullable: true }
+        package_name: { type: string, nullable: true }
+        credits:
+          type: integer
+          minimum: 1
+          description: Snapshotted from the package at purchase time.
+        valid_from: { type: string, format: date-time, nullable: true }
+        valid_to:
+          type: string
+          format: date-time
+          nullable: true
+          description: Null when the credits never expire.
+        status: { type: string, enum: [pending, active, expired] }
+        payment_transaction_uuid:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            Null for a partner-activated purchase: the tenant paid the partner,
+            outside this platform, so there is no platform payment to record.
+        created_at: { type: string, format: date-time }
+    TopupPurchaseListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [purchases]
+          properties:
+            purchases:
+              type: array
+              items: { $ref: '#/components/schemas/TopupPurchase' }
+    ProvisionedTopup:
+      type: object
+      required: [pool_created, pool_credits]
+      properties:
+        pool_created:
+          type: boolean
+          description: >-
+            True for a tenant top-up: unlike a plan, a top-up gives the tenant a
+            credit pool of its own, spent before the partner's balance.
+        pool_credits: { type: integer, minimum: 0 }
+    GrantTenantTopupRequest:
+      type: object
+      required: [tenant_uuid, package_uuid]
+      properties:
+        tenant_uuid: { type: string, format: uuid }
+        package_uuid: { type: string, format: uuid }
+        activate_now:
+          type: boolean
+          default: true
+          description: Grant and activate in one call, provisioning the pool.
+        reference:
+          type: string
+          maxLength: 255
+          nullable: true
+          description: Free text kept in the audit trail (invoice number, note).
+    TenantTopupResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [purchase]
+          properties:
+            purchase: { $ref: '#/components/schemas/TopupPurchase' }
+            provisioning:
+              nullable: true
+              allOf:
+                - $ref: '#/components/schemas/ProvisionedTopup'
               description: Null when this call provisioned nothing.
     CreateIdentityProviderRequest:
       type: object

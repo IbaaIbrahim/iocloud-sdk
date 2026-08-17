@@ -7,11 +7,14 @@ import {
 import type { SubjectTokenIssuer } from "./federation.js";
 import type {
   ActivateTenantSubscriptionInput,
+  ActivateTenantTopupInput,
   CreateIdentityProviderInput,
   CreateTenantInput,
+  CreateTopupPackageInput,
   ExternalTenantMapping,
   FederatedLoginInput,
   FederatedSession,
+  GrantTenantTopupInput,
   IdentityProvider,
   IssueTenantTokenInput,
   JsonWebKeySet,
@@ -19,6 +22,7 @@ import type {
   PartnerToken,
   PlanSubscription,
   ProvisionedBalance,
+  ProvisionedTopup,
   SetUserPersonaInput,
   SubjectTokenClaimNames,
   SubscribeTenantInput,
@@ -27,6 +31,11 @@ import type {
   TenantPlan,
   TenantSubscription,
   TenantToken,
+  TenantTopup,
+  TopupPackage,
+  TopupPackagePlan,
+  TopupPurchase,
+  UpdateTopupPackageInput,
 } from "./models.js";
 
 type JsonObject = Record<string, unknown>;
@@ -192,6 +201,125 @@ export class IOCloudClient {
     return array(data.subscriptions).map((item) =>
       parsePlanSubscription(record(item)),
     );
+  }
+
+  /**
+   * List the top-up packages this partner offers its tenants.
+   *
+   * These are the packages you authored. What the *platform* sells you is a
+   * separate catalogue, reached through the dashboard.
+   */
+  async listTopupPackages(
+    options: { page?: number; limit?: number } = {},
+  ): Promise<TopupPackage[]> {
+    const page = options.page ?? 1;
+    const limit = options.limit ?? 25;
+    const data = await this.partnerRequest(
+      "GET",
+      `/v1/partner/topup-packages?page=${page}&limit=${limit}`,
+    );
+    return array(data.list).map((item) => parseTopupPackage(record(item)));
+  }
+
+  /**
+   * Create a credit bundle your tenants can buy.
+   *
+   * `planUuids` names your own tenant plans and is what lets two plans carry
+   * different offers: a package scoped to Bronze is invisible to a tenant on
+   * Silver. Pass none to offer it to every tenant.
+   */
+  async createTopupPackage(
+    input: CreateTopupPackageInput,
+  ): Promise<TopupPackage> {
+    const data = await this.partnerRequest("POST", "/v1/partner/topup-packages", {
+      name: input.name,
+      credits: input.credits,
+      price_cents: input.priceCents,
+      validity_days: input.validityDays ?? null,
+      plan_uuids: input.planUuids ?? [],
+    });
+    return parseTopupPackage(record(data.package));
+  }
+
+  /**
+   * Update one of your packages. Omitted fields are left unchanged.
+   *
+   * Editing changes what the package sells next, never what it already sold:
+   * existing purchases keep the credits snapshotted at purchase time.
+   * `status: "inactive"` withdraws it from the catalogue. Omitting `planUuids`
+   * keeps the current scoping; `[]` clears it.
+   */
+  async updateTopupPackage(
+    input: UpdateTopupPackageInput,
+  ): Promise<TopupPackage> {
+    const body: Record<string, unknown> = {};
+    if (input.name !== undefined) body.name = input.name;
+    if (input.credits !== undefined) body.credits = input.credits;
+    if (input.priceCents !== undefined) body.price_cents = input.priceCents;
+    if (input.validityDays !== undefined) body.validity_days = input.validityDays;
+    if (input.status !== undefined) body.status = input.status;
+    if (input.planUuids !== undefined) body.plan_uuids = input.planUuids;
+    const data = await this.partnerRequest(
+      "PATCH",
+      `/v1/partner/topup-packages/${input.packageUuid}`,
+      body,
+    );
+    return parseTopupPackage(record(data.package));
+  }
+
+  /**
+   * Sell one of your tenants a top-up.
+   *
+   * Same shape as {@link subscribeTenant}, and for the same reason: tenants
+   * are your clients and never pay this platform, so you own both halves. With
+   * `activateNow` (the default) the credits are spendable when this resolves —
+   * a top-up credit pool owned by the tenant, drawn on before your own
+   * balance.
+   *
+   * Pass `activateNow: false` to record the purchase first (status `pending`)
+   * and call {@link activateTenantTopup} once the client has paid. The package
+   * must be one that tenant is actually offered, so a plan-scoped package
+   * cannot be granted to a tenant on the wrong plan.
+   */
+  async grantTenantTopup(input: GrantTenantTopupInput): Promise<TenantTopup> {
+    const data = await this.partnerRequest(
+      "POST",
+      "/v1/partner/topups/tenant/purchases",
+      {
+        tenant_uuid: input.tenantUuid,
+        package_uuid: input.packageUuid,
+        activate_now: input.activateNow ?? true,
+        reference: input.reference ?? null,
+      },
+    );
+    return parseTenantTopup(data);
+  }
+
+  /**
+   * Activate a pending tenant top-up and provision its credit pool.
+   *
+   * Call this after collecting payment in your own billing system. Idempotent:
+   * activating an already-active purchase returns it unchanged with
+   * `provisioned` null, so a retry never grants the credits twice.
+   */
+  async activateTenantTopup(
+    input: ActivateTenantTopupInput,
+  ): Promise<TenantTopup> {
+    const data = await this.partnerRequest(
+      "POST",
+      `/v1/partner/topups/tenant/purchases/${input.transactionUuid}/activate`,
+      { reference: input.reference ?? null },
+    );
+    return parseTenantTopup(data);
+  }
+
+  /** List every top-up bought by one of this partner's tenants. */
+  async listTenantTopups(): Promise<TopupPurchase[]> {
+    const data = await this.partnerRequest(
+      "GET",
+      "/v1/partner/topups/tenant/purchases",
+    );
+    return array(data.purchases).map((item) => parseTopupPurchase(record(item)));
   }
 
   /**
@@ -508,6 +636,68 @@ function parseProvisionedBalance(payload: JsonObject): ProvisionedBalance {
         cap: integer(cap.cap),
       };
     }),
+  };
+}
+
+function parseTopupPackagePlan(payload: JsonObject): TopupPackagePlan {
+  return {
+    planType: string(payload.plan_type) as TopupPackagePlan["planType"],
+    planUuid: string(payload.plan_uuid),
+    planName: string(payload.plan_name),
+  };
+}
+
+function parseTopupPackage(payload: JsonObject): TopupPackage {
+  return {
+    uuid: string(payload.uuid),
+    name: string(payload.name),
+    credits: integer(payload.credits),
+    priceCents: integer(payload.price_cents),
+    // Null means the credits never expire.
+    validityDays:
+      payload.validity_days === null || payload.validity_days === undefined
+        ? null
+        : integer(payload.validity_days),
+    status: string(payload.status),
+    audience: payload.audience ? string(payload.audience) : null,
+    // Absent or empty: the package is offered to every subscriber.
+    plans: (payload.plans ? array(payload.plans) : []).map((item) =>
+      parseTopupPackagePlan(record(item)),
+    ),
+  };
+}
+
+function parseTopupPurchase(payload: JsonObject): TopupPurchase {
+  return {
+    uuid: string(payload.uuid),
+    tenantUuid: string(payload.tenant_uuid),
+    tenantName: string(payload.tenant_name),
+    packageUuid: payload.package_uuid ? string(payload.package_uuid) : null,
+    packageName: payload.package_name ? string(payload.package_name) : null,
+    credits: integer(payload.credits),
+    status: string(payload.status),
+    validFrom: payload.valid_from ? new Date(string(payload.valid_from)) : null,
+    // Null means the credits never expire.
+    validTo: payload.valid_to ? new Date(string(payload.valid_to)) : null,
+    createdAt: new Date(string(payload.created_at)),
+  };
+}
+
+function parseProvisionedTopup(payload: JsonObject): ProvisionedTopup {
+  return {
+    poolCreated: Boolean(payload.pool_created),
+    poolCredits: integer(payload.pool_credits ?? 0),
+  };
+}
+
+function parseTenantTopup(payload: JsonObject): TenantTopup {
+  const provisioning = payload.provisioning;
+  return {
+    purchase: parseTopupPurchase(record(payload.purchase)),
+    provisioned:
+      provisioning && typeof provisioning === "object"
+        ? parseProvisionedTopup(record(provisioning))
+        : null,
   };
 }
 

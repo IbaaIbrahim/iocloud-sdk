@@ -1,6 +1,6 @@
 {
   "name": "@iocloud/sdk",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Node.js and TypeScript SDK for IOCloud partner spaces",
   "license": "UNLICENSED",
   "type": "module",
@@ -18,7 +18,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "test": "npm run build && node --test test/client.test.js test/client-plans.test.js test/client-federation.test.js test/federation.test.js",
+    "test": "npm run build && node --test test/client.test.js test/client-plans.test.js test/client-topups.test.js test/client-federation.test.js test/federation.test.js",
     "prepublishOnly": "npm test && npm run build"
   },
   "engines": {
