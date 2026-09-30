@@ -18,7 +18,6 @@ from .exceptions import (
     IOCloudTokenExchangeError,
 )
 from .models import (
-    ExternalTenantMapping,
     FederatedSession,
     IdentityProvider,
     PartnerToken,
@@ -35,10 +34,10 @@ from .models import (
     TopupPackage,
     TopupPackagePlan,
     TopupPurchase,
+    User,
 )
 
 __all__ = [
-    "ExternalTenantMapping",
     "FederatedSession",
     "IOCloudAPIError",
     "IOCloudAuthenticationError",
@@ -63,4 +62,5 @@ __all__ = [
     "TopupPackage",
     "TopupPackagePlan",
     "TopupPurchase",
+    "User",
 ]

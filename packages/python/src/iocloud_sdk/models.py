@@ -59,40 +59,67 @@ class TenantCredential:
 
 @dataclass(frozen=True, slots=True)
 class Tenant:
+    """A tenant (space) inside one of the partner's applications.
+
+    ``external_id`` is the partner's own id for the organisation: the value
+    its subject tokens carry in the tenant claim, unique within the
+    application. A federated login reaches the tenant only through it, so a
+    tenant with none (``None``) cannot be logged into.
+    """
+
     uuid: UUID
     application_uuid: UUID
     name: str
     slug: str
     contact_email: str
+    external_id: str | None
     status: str
     created_at: datetime
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "Tenant":
+        external_id = payload.get("external_id")
         return cls(
             uuid=UUID(str(payload["uuid"])),
             application_uuid=UUID(str(payload["application_uuid"])),
             name=str(payload["name"]),
             slug=str(payload["slug"]),
             contact_email=str(payload["contact_email"]),
+            external_id=str(external_id) if external_id is not None else None,
             status=str(payload["status"]),
             created_at=_datetime(payload["created_at"]),
         )
 
 
 @dataclass(frozen=True, slots=True)
-class ExternalTenantMapping:
-    identity_provider_uuid: UUID
+class User:
+    """A user inside one of the partner's tenants.
+
+    ``external_id`` is the partner's own id for the person: the value its
+    subject tokens carry in the user claim (``sub`` by default), unique within
+    the tenant. A federated login finds the user by it, never by email, so a
+    user with none (``None``) is one no federated login reaches. A user the
+    partner creates starts ``pending`` and cannot log in until activated.
+    """
+
+    uuid: UUID
     tenant_uuid: UUID
-    external_tenant_id: str
+    name: str
+    email: str
+    external_id: str | None
+    status: str
     created_at: datetime
 
     @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> "ExternalTenantMapping":
+    def from_payload(cls, payload: dict[str, Any]) -> "User":
+        external_id = payload.get("external_id")
         return cls(
-            identity_provider_uuid=UUID(str(payload["identity_provider_uuid"])),
+            uuid=UUID(str(payload["uuid"])),
             tenant_uuid=UUID(str(payload["tenant_uuid"])),
-            external_tenant_id=str(payload["external_tenant_id"]),
+            name=str(payload["name"]),
+            email=str(payload["email"]),
+            external_id=str(external_id) if external_id is not None else None,
+            status=str(payload["status"]),
             created_at=_datetime(payload["created_at"]),
         )
 
@@ -116,11 +143,13 @@ class SubjectTokenClaimNames:
 class IdentityProvider:
     """The platform's trust anchor for one partner issuer.
 
-    Every field is an instruction to the platform's token validator; a subject
-    token overrides none of them.
+    It belongs to one of the partner's applications: a token it signs logs
+    users into that application's tenants only. Every field is an instruction
+    to the platform's token validator; a subject token overrides none of them.
     """
 
     uuid: UUID
+    application_uuid: UUID
     name: str
     issuer: str
     jwks_url: str
@@ -140,6 +169,7 @@ class IdentityProvider:
     def from_payload(cls, payload: dict[str, Any]) -> "IdentityProvider":
         return cls(
             uuid=UUID(str(payload["uuid"])),
+            application_uuid=UUID(str(payload["application_uuid"])),
             name=str(payload["name"]),
             issuer=str(payload["issuer"]),
             jwks_url=str(payload["jwks_url"]),

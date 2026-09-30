@@ -46,6 +46,14 @@ paths:
                 $ref: '#/components/schemas/TenantResponse'
         '401':
           $ref: '#/components/responses/AuthenticationError'
+        '409':
+          description: >-
+            Another tenant of the application already holds the external_id
+            (TENANT_EXTERNAL_ID_TAKEN).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         default:
           $ref: '#/components/responses/ApiError'
   /v1/partner/federation/providers:
@@ -69,6 +77,14 @@ paths:
                 $ref: '#/components/schemas/IdentityProviderResponse'
         '401':
           $ref: '#/components/responses/AuthenticationError'
+        '404':
+          description: >-
+            The application does not exist or is not the partner's
+            (APPLICATION_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '409':
           description: The issuer is already registered as a trusted provider.
           content:
@@ -89,30 +105,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IdentityProviderListResponse'
-        '401':
-          $ref: '#/components/responses/AuthenticationError'
-        default:
-          $ref: '#/components/responses/ApiError'
-  /v1/partner/federation/providers/{provider_uuid}/tenants:
-    post:
-      operationId: mapExternalTenant
-      security:
-        - bearerAuth: []
-      parameters:
-        - $ref: '#/components/parameters/ProviderUuid'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/MapExternalTenantRequest'
-      responses:
-        '200':
-          description: External tenant mapped.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ExternalTenantMappingResponse'
         '401':
           $ref: '#/components/responses/AuthenticationError'
         default:
@@ -143,6 +135,57 @@ paths:
                 $ref: '#/components/schemas/TenantCredentialResponse'
         '401':
           $ref: '#/components/responses/AuthenticationError'
+        default:
+          $ref: '#/components/responses/ApiError'
+  /v1/partner/tenants/{tenant_uuid}/external-id:
+    patch:
+      operationId: setTenantExternalId
+      summary: Set, change or clear the id the partner's tokens carry for a tenant.
+      description: >-
+        A federated login resolves the subject token's tenant claim to the
+        tenant of the identity provider's application whose external_id equals
+        it. The id is unique within the application, and every provider of
+        that application must sign the same one. The key is required: null
+        clears it, which stops federated logins into the tenant.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/TenantUuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetTenantExternalIdRequest'
+      responses:
+        '200':
+          description: External id updated (TENANT_EXTERNAL_ID_UPDATED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '403':
+          description: The tenant is not the partner's (TENANT_NOT_OWNED_BY_PARTNER).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: No such tenant (TENANT_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: >-
+            Another tenant of the same application already holds the id
+            (TENANT_EXTERNAL_ID_TAKEN).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         default:
           $ref: '#/components/responses/ApiError'
   /v1/partner/plans/tenant:
@@ -481,6 +524,83 @@ paths:
                 $ref: '#/components/schemas/TenantTokenResponse'
         '401':
           $ref: '#/components/responses/AuthenticationError'
+  /v1/tenant/users:
+    post:
+      operationId: createUser
+      summary: Create a user inside the authenticated tenant.
+      description: >-
+        Authenticated with a tenant token, not a partner token. external_id is
+        the partner's own id for the person — the value its subject tokens
+        carry in the user claim — and is how a federated login finds the user
+        within the token's tenant, never by email. Pre-create users this way
+        when the identity provider does not provision them just in time
+        (allow_jit_users false). The user starts pending and cannot log in
+        until it is activated.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '201':
+          description: User created, pending until activated (USER_CREATED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '409':
+          description: >-
+            Another user of the tenant already holds the external_id
+            (USER_EXTERNAL_ID_TAKEN), or the user conflicts otherwise, for
+            example on its email (USER_INTEGRITY_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        default:
+          $ref: '#/components/responses/ApiError'
+  /v1/tenant/users/{user_uuid}/status:
+    patch:
+      operationId: updateUserStatus
+      summary: Activate or deactivate a user of the authenticated tenant.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserUuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserStatusRequest'
+      responses:
+        '200':
+          description: Status updated (USER_STATUS_UPDATED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '403':
+          description: The user belongs to another tenant (USER_NOT_IN_TENANT).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: No such user (USER_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        default:
+          $ref: '#/components/responses/ApiError'
   /v1/tenant/users/{user_uuid}/persona:
     patch:
       operationId: setUserPersona
@@ -518,11 +638,6 @@ components:
   parameters:
     ApplicationUuid:
       name: application_uuid
-      in: path
-      required: true
-      schema: { type: string, format: uuid }
-    ProviderUuid:
-      name: provider_uuid
       in: path
       required: true
       schema: { type: string, format: uuid }
@@ -596,6 +711,15 @@ components:
         name: { type: string }
         slug: { type: string }
         contact_email: { type: string, format: email }
+        external_id:
+          type: string
+          minLength: 1
+          maxLength: 255
+          nullable: true
+          description: >-
+            The partner's own id for the organisation: the value its subject
+            tokens carry in the tenant claim. Unique within the application;
+            omit or null for none.
     Tenant:
       type: object
       required: [uuid, application_uuid, name, slug, contact_email, status, created_at]
@@ -605,8 +729,25 @@ components:
         name: { type: string }
         slug: { type: string }
         contact_email: { type: string, format: email }
+        external_id:
+          type: string
+          nullable: true
+          description: >-
+            What a federated login's tenant claim resolves to, within the
+            identity provider's application. Null when no federated login
+            reaches this tenant.
         status: { type: string }
         created_at: { type: string, format: date-time }
+    SetTenantExternalIdRequest:
+      type: object
+      required: [external_id]
+      properties:
+        external_id:
+          type: string
+          minLength: 1
+          maxLength: 255
+          nullable: true
+          description: Required; null clears it.
     TenantResponse:
       type: object
       required: [data]
@@ -921,8 +1062,14 @@ components:
               description: Null when this call provisioned nothing.
     CreateIdentityProviderRequest:
       type: object
-      required: [name, issuer, jwks_url, allowed_audiences]
+      required: [application_uuid, name, issuer, jwks_url, allowed_audiences]
       properties:
+        application_uuid:
+          type: string
+          format: uuid
+          description: >-
+            One of the partner's applications. A token this provider signs
+            logs users into that application's tenants only.
         name: { type: string, maxLength: 255 }
         issuer:
           type: string
@@ -959,6 +1106,7 @@ components:
       type: object
       required:
         - uuid
+        - application_uuid
         - name
         - issuer
         - jwks_url
@@ -975,6 +1123,7 @@ components:
         - created_at
       properties:
         uuid: { type: string, format: uuid }
+        application_uuid: { type: string, format: uuid }
         name: { type: string }
         issuer: { type: string }
         jwks_url: { type: string }
@@ -1013,29 +1162,52 @@ components:
             providers:
               type: array
               items: { $ref: '#/components/schemas/IdentityProvider' }
-    MapExternalTenantRequest:
+    CreateUserRequest:
       type: object
-      required: [tenant_uuid, external_tenant_id]
+      required: [name, email]
       properties:
-        tenant_uuid: { type: string, format: uuid }
-        external_tenant_id: { type: string }
-    ExternalTenantMapping:
+        name: { type: string, minLength: 1, maxLength: 255 }
+        email: { type: string, format: email, maxLength: 255 }
+        external_id:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: >-
+            The partner's own id for the person: the value its subject tokens
+            carry in the user claim. Unique within the tenant; omit for none.
+    UpdateUserStatusRequest:
       type: object
-      required: [identity_provider_uuid, tenant_uuid, external_tenant_id, created_at]
+      required: [status]
       properties:
-        identity_provider_uuid: { type: string, format: uuid }
+        status: { type: string, enum: [active, deactivated] }
+    User:
+      type: object
+      required: [uuid, tenant_uuid, name, email, status, created_at]
+      properties:
+        uuid: { type: string, format: uuid }
         tenant_uuid: { type: string, format: uuid }
-        external_tenant_id: { type: string }
+        name: { type: string }
+        email: { type: string, format: email }
+        external_id:
+          type: string
+          nullable: true
+          description: >-
+            What a federated login's user claim resolves to, within the tenant.
+            Null when no federated login reaches this user.
+        status:
+          type: string
+          enum: [pending, active, deactivated]
+          description: A user created through the API starts pending.
         created_at: { type: string, format: date-time }
-    ExternalTenantMappingResponse:
+    UserResponse:
       type: object
       required: [data]
       properties:
         data:
           type: object
-          required: [mapping]
+          required: [user]
           properties:
-            mapping: { $ref: '#/components/schemas/ExternalTenantMapping' }
+            user: { $ref: '#/components/schemas/User' }
     TenantCredential:
       type: object
       required: [credential_uuid, tenant_uuid, client_id, client_secret]

@@ -5,7 +5,6 @@ namespace IOCloud\Laravel;
 use DateTimeImmutable;
 use DateTimeZone;
 use Illuminate\Http\Client\Factory as HttpFactory;
-use IOCloud\Laravel\Data\ExternalTenantMapping;
 use IOCloud\Laravel\Data\FederatedSession;
 use IOCloud\Laravel\Data\IdentityProvider;
 use IOCloud\Laravel\Data\PartnerToken;
@@ -19,6 +18,7 @@ use IOCloud\Laravel\Data\TenantToken;
 use IOCloud\Laravel\Data\TenantTopup;
 use IOCloud\Laravel\Data\TopupPackage;
 use IOCloud\Laravel\Data\TopupPurchase;
+use IOCloud\Laravel\Data\User;
 use IOCloud\Laravel\Exceptions\IOCloudAPIException;
 use IOCloud\Laravel\Exceptions\IOCloudAuthenticationException;
 use IOCloud\Laravel\Exceptions\IOCloudConfigurationException;
@@ -78,16 +78,50 @@ final class IOCloudClient
         return $this->partnerToken = PartnerToken::fromPayload($this->array($data['token']));
     }
 
+    /**
+     * Create a tenant (space) inside an application owned by the partner.
+     *
+     * `$externalId` is your own id for the organisation — the value your subject
+     * tokens carry in the tenant claim — and must be unique within the
+     * application. Omit it for a tenant nobody logs into yet and set it later
+     * with {@see setTenantExternalId()}.
+     */
     public function createTenant(
         string $applicationUuid,
         string $name,
         string $slug,
         string $contactEmail,
+        ?string $externalId = null,
     ): Tenant {
+        $payload = ['name' => $name, 'slug' => $slug, 'contact_email' => $contactEmail];
+        if ($externalId !== null) {
+            $payload['external_id'] = $externalId;
+        }
+
         $data = $this->partnerRequest(
             'POST',
             "/v1/partner/applications/{$applicationUuid}/tenants",
-            ['name' => $name, 'slug' => $slug, 'contact_email' => $contactEmail],
+            $payload,
+        );
+
+        return Tenant::fromPayload($this->array($data['tenant']));
+    }
+
+    /**
+     * Set, change or clear the id your subject tokens carry for a tenant.
+     *
+     * A federated login resolves its tenant claim to the tenant of the identity
+     * provider's application whose `external_id` equals it, so this is what
+     * makes a tenant reachable. The id is unique within the application, and
+     * every provider of that application must sign the same one. Null clears
+     * it, which stops federated logins into the tenant.
+     */
+    public function setTenantExternalId(string $tenantUuid, ?string $externalId): Tenant
+    {
+        $data = $this->partnerRequest(
+            'PATCH',
+            "/v1/partner/tenants/{$tenantUuid}/external-id",
+            ['external_id' => $externalId],
         );
 
         return Tenant::fromPayload($this->array($data['tenant']));
@@ -370,6 +404,11 @@ final class IOCloudClient
     /**
      * Register the partner's own issuer as a trusted identity provider.
      *
+     * `$applicationUuid` names the application the provider belongs to: a token
+     * it signs logs users into that application's tenants only. An application
+     * may have several providers, and any of them logs in any of its users, so
+     * they must all sign the same tenant and user ids.
+     *
      * `$jwksUrl` defaults to `<issuer>/.well-known/jwks.json`, the path this
      * package's JWKS route serves. Pass the same `$claimNames` as the
      * {@see SubjectTokenIssuer} that signs the tokens, so the two configurations
@@ -379,6 +418,7 @@ final class IOCloudClient
      * @param list<string> $allowedAlgorithms
      */
     public function createIdentityProvider(
+        string $applicationUuid,
         string $name,
         string $issuer,
         array $allowedAudiences,
@@ -393,6 +433,7 @@ final class IOCloudClient
         $claims = $claimNames ?? new SubjectTokenClaimNames();
 
         $data = $this->partnerRequest('POST', '/v1/partner/federation/providers', [
+            'application_uuid' => $applicationUuid,
             'name' => $name,
             'issuer' => $normalizedIssuer,
             'jwks_url' => $jwksUrl ?? $normalizedIssuer.'/.well-known/jwks.json',
@@ -425,24 +466,6 @@ final class IOCloudClient
             ),
             $this->array($data['providers']),
         ));
-    }
-
-    public function mapExternalTenant(
-        string $providerUuid,
-        string $tenantUuid,
-        string $externalTenantId,
-        ?string $accessToken = null,
-    ): ExternalTenantMapping {
-        $path = "/v1/partner/federation/providers/{$providerUuid}/tenants";
-        $payload = [
-            'tenant_uuid' => $tenantUuid,
-            'external_tenant_id' => $externalTenantId,
-        ];
-        $data = $accessToken === null
-            ? $this->partnerRequest('POST', $path, $payload)
-            : $this->request('POST', $path, $payload, $accessToken);
-
-        return ExternalTenantMapping::fromPayload($this->array($data['mapping']));
     }
 
     /**
@@ -600,6 +623,66 @@ final class IOCloudClient
     }
 
     /**
+     * Create a user inside the tenant a tenant credential belongs to.
+     *
+     * `$externalId` is your own id for the person — the value your subject
+     * tokens carry in the user claim (`sub` by default) — and is how a federated
+     * login finds the user within the token's tenant. Pre-create users this way
+     * when the identity provider does not provision them just in time
+     * (`allowJitUsers: false`).
+     *
+     * The route is tenant-scoped, so the call authenticates with the credential
+     * from {@see createTenantCredentials()}, refreshing the tenant token once on
+     * a 401. The user starts `pending`: activate it with
+     * {@see updateUserStatus()} before it can log in.
+     */
+    public function createUser(
+        string $name,
+        string $email,
+        string $tenantClientId,
+        string $tenantClientSecret,
+        ?string $externalId = null,
+    ): User {
+        $payload = ['name' => $name, 'email' => $email];
+        if ($externalId !== null) {
+            $payload['external_id'] = $externalId;
+        }
+
+        $data = $this->tenantRequest(
+            'POST',
+            '/v1/tenant/users',
+            $payload,
+            $tenantClientId,
+            $tenantClientSecret,
+        );
+
+        return User::fromPayload($this->array($data['user']));
+    }
+
+    /**
+     * Activate (`'active'`) or deactivate (`'deactivated'`) a user.
+     *
+     * Tenant-scoped like {@see createUser()}, and authenticated the same way. A
+     * pending user cannot log in until this activates it.
+     */
+    public function updateUserStatus(
+        string $userUuid,
+        string $status,
+        string $tenantClientId,
+        string $tenantClientSecret,
+    ): User {
+        $data = $this->tenantRequest(
+            'PATCH',
+            "/v1/tenant/users/{$userUuid}/status",
+            ['status' => $status],
+            $tenantClientId,
+            $tenantClientSecret,
+        );
+
+        return User::fromPayload($this->array($data['user']));
+    }
+
+    /**
      * The configured token issuer, or a message naming what to configure.
      *
      * Federation is optional: an application that only provisions tenants never
@@ -630,6 +713,30 @@ final class IOCloudClient
             return $this->request($method, $path, $payload, $token->accessToken);
         } catch (IOCloudAuthenticationException) {
             $token = $this->issuePartnerToken(true);
+
+            return $this->request($method, $path, $payload, $token->accessToken);
+        }
+    }
+
+    /**
+     * The tenant-token twin of {@see partnerRequest()}: issues (or reuses) the
+     * credential's tenant token and refreshes it once on a 401.
+     *
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    private function tenantRequest(
+        string $method,
+        string $path,
+        array $payload,
+        string $tenantClientId,
+        string $tenantClientSecret,
+    ): array {
+        $token = $this->issueTenantToken($tenantClientId, $tenantClientSecret);
+        try {
+            return $this->request($method, $path, $payload, $token->accessToken);
+        } catch (IOCloudAuthenticationException) {
+            $token = $this->issueTenantToken($tenantClientId, $tenantClientSecret, true);
 
             return $this->request($method, $path, $payload, $token->accessToken);
         }

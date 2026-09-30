@@ -1,0 +1,371 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { IOCloudAPIError, IOCloudClient } from "../dist/index.js";
+
+const APPLICATION_UUID = "11111111-1111-4111-8111-111111111111";
+const TENANT_UUID = "3f1b1f70-0000-4000-8000-0000000000d1";
+const USER_UUID = "3f1b1f70-0000-4000-8000-0000000000f1";
+
+const PARTNER_TOKEN = {
+  data: {
+    token: {
+      access_token: "partner-token",
+      token_type: "Bearer",
+      expires_at: "2099-01-01T00:00:00Z",
+    },
+  },
+};
+const TENANT_TOKEN = {
+  data: {
+    token: {
+      access_token: "tenant-token",
+      token_type: "Bearer",
+      expires_at: "2099-01-01T00:00:00Z",
+    },
+  },
+};
+
+const TENANT = {
+  uuid: TENANT_UUID,
+  application_uuid: APPLICATION_UUID,
+  name: "Acme Ltd",
+  slug: "acme",
+  contact_email: "ops@acme.example",
+  external_id: "acme",
+  status: "active",
+  created_at: "2026-09-30T00:00:00Z",
+};
+const USER = {
+  uuid: USER_UUID,
+  tenant_uuid: TENANT_UUID,
+  name: "Dana Okafor",
+  email: "dana.okafor@acme.example",
+  external_id: "acme-user-1001",
+  status: "pending",
+  created_at: "2026-09-30T00:00:00Z",
+};
+
+const TENANT_CREDENTIAL = {
+  tenantClientId: "tenant-client-id",
+  tenantClientSecret: "tenant-client-secret",
+};
+
+/**
+ * Replies per `METHOD /path` from a queue and records every request. The last
+ * response in a queue repeats, so a token endpoint answers any number of
+ * issues from one entry.
+ */
+function scriptedFetch(responses) {
+  const queues = Object.fromEntries(
+    Object.entries(responses).map(([key, queue]) => [key, [...queue]]),
+  );
+  const requests = [];
+  const fetch = async (input, init = {}) => {
+    const url = new URL(input);
+    const method = init.method ?? "GET";
+    requests.push({
+      method,
+      path: url.pathname,
+      headers: new Headers(init.headers),
+      body: init.body ? JSON.parse(init.body) : undefined,
+    });
+    const queue = queues[`${method} ${url.pathname}`];
+    assert.ok(queue?.length, `unexpected ${method} ${url.pathname}`);
+    const build = queue.length > 1 ? queue.shift() : queue[0];
+    return build();
+  };
+  const sent = (method, path) =>
+    requests.filter(
+      (request) => request.method === method && request.path === path,
+    );
+  return { fetch, sent };
+}
+
+function client(fetch) {
+  return new IOCloudClient({
+    clientId: "client-id",
+    clientSecret: "client-secret",
+    baseUrl: "https://api.example.com",
+    fetch,
+  });
+}
+
+const partnerToken = () => Response.json(PARTNER_TOKEN);
+const tenantToken = () => Response.json(TENANT_TOKEN);
+const rejectedToken = () =>
+  Response.json({ code: "INVALID_TOKEN", message: "Revoked." }, { status: 401 });
+
+const TENANTS_PATH = `/v1/partner/applications/${APPLICATION_UUID}/tenants`;
+const EXTERNAL_ID_PATH = `/v1/partner/tenants/${TENANT_UUID}/external-id`;
+const STATUS_PATH = `/v1/tenant/users/${USER_UUID}/status`;
+
+test("createTenant sends the external id the tokens will carry", async () => {
+  const { fetch, sent } = scriptedFetch({
+    "POST /v1/partner/auth/token": [partnerToken],
+    [`POST ${TENANTS_PATH}`]: [
+      () => Response.json({ data: { tenant: TENANT } }, { status: 201 }),
+    ],
+  });
+
+  const tenant = await client(fetch).createTenant({
+    applicationUuid: APPLICATION_UUID,
+    name: "Acme Ltd",
+    slug: "acme",
+    contactEmail: "ops@acme.example",
+    externalId: "acme",
+  });
+
+  const [request] = sent("POST", TENANTS_PATH);
+  assert.deepEqual(request.body, {
+    name: "Acme Ltd",
+    slug: "acme",
+    contact_email: "ops@acme.example",
+    external_id: "acme",
+  });
+  assert.equal(request.headers.get("authorization"), "Bearer partner-token");
+  assert.equal(tenant.applicationUuid, APPLICATION_UUID);
+  assert.equal(tenant.externalId, "acme");
+});
+
+test("createTenant without an external id omits it and reads null", async () => {
+  const { fetch, sent } = scriptedFetch({
+    "POST /v1/partner/auth/token": [partnerToken],
+    [`POST ${TENANTS_PATH}`]: [
+      () =>
+        Response.json(
+          { data: { tenant: { ...TENANT, external_id: null } } },
+          { status: 201 },
+        ),
+    ],
+  });
+
+  const tenant = await client(fetch).createTenant({
+    applicationUuid: APPLICATION_UUID,
+    name: "Acme Ltd",
+    slug: "acme",
+    contactEmail: "ops@acme.example",
+  });
+
+  const [request] = sent("POST", TENANTS_PATH);
+  assert.equal("external_id" in request.body, false);
+  assert.equal(tenant.externalId, null);
+});
+
+test("setTenantExternalId patches the id the tenant claim resolves to", async () => {
+  const { fetch, sent } = scriptedFetch({
+    "POST /v1/partner/auth/token": [partnerToken],
+    [`PATCH ${EXTERNAL_ID_PATH}`]: [
+      () => Response.json({ data: { tenant: TENANT } }),
+    ],
+  });
+
+  const tenant = await client(fetch).setTenantExternalId({
+    tenantUuid: TENANT_UUID,
+    externalId: "acme",
+  });
+
+  const [request] = sent("PATCH", EXTERNAL_ID_PATH);
+  assert.deepEqual(request.body, { external_id: "acme" });
+  assert.equal(request.headers.get("authorization"), "Bearer partner-token");
+  assert.equal(tenant.uuid, TENANT_UUID);
+  assert.equal(tenant.externalId, "acme");
+});
+
+test("setTenantExternalId clears with an explicit null", async () => {
+  // The key is required: null is what clears it, and an omitted key is a
+  // validation error rather than "leave it unchanged".
+  const { fetch, sent } = scriptedFetch({
+    "POST /v1/partner/auth/token": [partnerToken],
+    [`PATCH ${EXTERNAL_ID_PATH}`]: [
+      () => Response.json({ data: { tenant: { ...TENANT, external_id: null } } }),
+    ],
+  });
+
+  const tenant = await client(fetch).setTenantExternalId({
+    tenantUuid: TENANT_UUID,
+    externalId: null,
+  });
+
+  const [request] = sent("PATCH", EXTERNAL_ID_PATH);
+  assert.deepEqual(request.body, { external_id: null });
+  assert.equal(tenant.externalId, null);
+});
+
+test("an external id another tenant holds is refused", async () => {
+  const { fetch } = scriptedFetch({
+    "POST /v1/partner/auth/token": [partnerToken],
+    [`PATCH ${EXTERNAL_ID_PATH}`]: [
+      () =>
+        Response.json(
+          {
+            code: "TENANT_EXTERNAL_ID_TAKEN",
+            message: "Another tenant of this application holds it.",
+          },
+          { status: 409 },
+        ),
+    ],
+  });
+
+  await assert.rejects(
+    client(fetch).setTenantExternalId({
+      tenantUuid: TENANT_UUID,
+      externalId: "acme",
+    }),
+    (error) =>
+      error instanceof IOCloudAPIError &&
+      error.statusCode === 409 &&
+      error.code === "TENANT_EXTERNAL_ID_TAKEN",
+  );
+});
+
+test("createUser creates the user under a tenant token", async () => {
+  const { fetch, sent } = scriptedFetch({
+    "POST /v1/tenant/auth/token": [tenantToken],
+    "POST /v1/tenant/users": [
+      () => Response.json({ data: { user: USER } }, { status: 201 }),
+    ],
+  });
+
+  const user = await client(fetch).createUser({
+    name: "Dana Okafor",
+    email: "dana.okafor@acme.example",
+    externalId: "acme-user-1001",
+    ...TENANT_CREDENTIAL,
+  });
+
+  const [tokenRequest] = sent("POST", "/v1/tenant/auth/token");
+  assert.deepEqual(tokenRequest.body, {
+    client_id: "tenant-client-id",
+    client_secret: "tenant-client-secret",
+  });
+  const [request] = sent("POST", "/v1/tenant/users");
+  assert.deepEqual(request.body, {
+    name: "Dana Okafor",
+    email: "dana.okafor@acme.example",
+    external_id: "acme-user-1001",
+  });
+  assert.equal(request.headers.get("authorization"), "Bearer tenant-token");
+  assert.equal(sent("POST", "/v1/partner/auth/token").length, 0);
+  assert.equal(user.uuid, USER_UUID);
+  assert.equal(user.tenantUuid, TENANT_UUID);
+  assert.equal(user.externalId, "acme-user-1001");
+  assert.equal(user.status, "pending");
+  assert.ok(user.createdAt instanceof Date);
+});
+
+test("createUser without an external id omits it and reads null", async () => {
+  const { fetch, sent } = scriptedFetch({
+    "POST /v1/tenant/auth/token": [tenantToken],
+    "POST /v1/tenant/users": [
+      () =>
+        Response.json(
+          { data: { user: { ...USER, external_id: null } } },
+          { status: 201 },
+        ),
+    ],
+  });
+
+  const user = await client(fetch).createUser({
+    name: "Dana Okafor",
+    email: "dana.okafor@acme.example",
+    ...TENANT_CREDENTIAL,
+  });
+
+  const [request] = sent("POST", "/v1/tenant/users");
+  assert.equal("external_id" in request.body, false);
+  assert.equal(user.externalId, null);
+});
+
+test("createUser refreshes a rejected tenant token once", async () => {
+  const { fetch, sent } = scriptedFetch({
+    "POST /v1/tenant/auth/token": [tenantToken],
+    "POST /v1/tenant/users": [
+      rejectedToken,
+      () => Response.json({ data: { user: USER } }, { status: 201 }),
+    ],
+  });
+
+  const user = await client(fetch).createUser({
+    name: "Dana Okafor",
+    email: "dana.okafor@acme.example",
+    ...TENANT_CREDENTIAL,
+  });
+
+  assert.equal(sent("POST", "/v1/tenant/auth/token").length, 2);
+  assert.equal(sent("POST", "/v1/tenant/users").length, 2);
+  assert.equal(user.uuid, USER_UUID);
+});
+
+test("createUser surfaces an external id another user holds", async () => {
+  const { fetch, sent } = scriptedFetch({
+    "POST /v1/tenant/auth/token": [tenantToken],
+    "POST /v1/tenant/users": [
+      () =>
+        Response.json(
+          {
+            code: "USER_EXTERNAL_ID_TAKEN",
+            message: "Another user of this tenant holds it.",
+          },
+          { status: 409 },
+        ),
+    ],
+  });
+
+  await assert.rejects(
+    client(fetch).createUser({
+      name: "Dana Okafor",
+      email: "dana.okafor@acme.example",
+      externalId: "acme-user-1001",
+      ...TENANT_CREDENTIAL,
+    }),
+    (error) =>
+      error instanceof IOCloudAPIError && error.code === "USER_EXTERNAL_ID_TAKEN",
+  );
+  // A refusal is not an authentication failure, so nothing is retried.
+  assert.equal(sent("POST", "/v1/tenant/users").length, 1);
+});
+
+test("updateUserStatus activates a pending user under a tenant token", async () => {
+  const { fetch, sent } = scriptedFetch({
+    "POST /v1/tenant/auth/token": [tenantToken],
+    [`PATCH ${STATUS_PATH}`]: [
+      () =>
+        Response.json({
+          data: { user: { ...USER, external_id: null, status: "active" } },
+        }),
+    ],
+  });
+
+  const user = await client(fetch).updateUserStatus({
+    userUuid: USER_UUID,
+    status: "active",
+    ...TENANT_CREDENTIAL,
+  });
+
+  const [request] = sent("PATCH", STATUS_PATH);
+  assert.deepEqual(request.body, { status: "active" });
+  assert.equal(request.headers.get("authorization"), "Bearer tenant-token");
+  assert.equal(user.status, "active");
+  assert.equal(user.externalId, null);
+});
+
+test("updateUserStatus refreshes a rejected tenant token once", async () => {
+  const { fetch, sent } = scriptedFetch({
+    "POST /v1/tenant/auth/token": [tenantToken],
+    [`PATCH ${STATUS_PATH}`]: [
+      rejectedToken,
+      () => Response.json({ data: { user: { ...USER, status: "active" } } }),
+    ],
+  });
+
+  const user = await client(fetch).updateUserStatus({
+    userUuid: USER_UUID,
+    status: "active",
+    ...TENANT_CREDENTIAL,
+  });
+
+  assert.equal(sent("POST", "/v1/tenant/auth/token").length, 2);
+  assert.equal(sent("PATCH", STATUS_PATH).length, 2);
+  assert.equal(user.status, "active");
+});

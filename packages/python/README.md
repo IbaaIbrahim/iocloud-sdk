@@ -36,31 +36,31 @@ with IOCloudClient(
         name="Acme workspace",
         slug="acme",
         contact_email="ops@acme.example",
-    )
-
-    mapping = client.map_external_tenant(
-        provider_uuid=UUID("22222222-2222-2222-2222-222222222222"),
-        tenant_uuid=tenant.uuid,
-        external_tenant_id="acme-external-id",
+        external_id="acme-external-id",  # optional: see below
     )
 ```
 
 Partner tokens are issued lazily and cached until shortly before expiration.
 An authenticated request that returns `401` triggers one token refresh and retry.
 
-## Mapping with a tenant token
+## A tenant's external id
 
-The mapping endpoint accepts either a partner token or a tenant token. A tenant
-token can map only its own internal tenant:
+`external_id` is your own id for the organisation — the value your subject
+tokens carry in the tenant claim — and is what a federated login resolves to,
+within the identity provider's application. Set it at creation, as above, or
+later; `None` clears it, which stops federated logins into the tenant:
 
 ```python
-mapping = client.map_external_tenant(
-    provider_uuid=provider_uuid,
-    tenant_uuid=tenant_uuid,
-    external_tenant_id="customer-42",
-    access_token=tenant_access_token,
+tenant = client.set_tenant_external_id(
+    tenant_uuid=tenant.uuid,
+    external_id="customer-42",
 )
+
+client.set_tenant_external_id(tenant_uuid=tenant.uuid, external_id=None)
 ```
+
+The id is unique within the application: one another tenant already holds is
+refused with an `IOCloudAPIError` whose `code` is `TENANT_EXTERNAL_ID_TAKEN`.
 
 The SDK raises `IOCloudAuthenticationError` for rejected bearer/client
 credentials and `IOCloudAPIError` for all other non-success API responses.
@@ -162,6 +162,7 @@ client = IOCloudClient(
 )
 
 provider = client.create_identity_provider(
+    application_uuid=UUID("11111111-1111-1111-1111-111111111111"),
     name="Acme Portal",
     issuer=token_issuer.issuer,
     allowed_audiences=[token_issuer.audience],
@@ -171,14 +172,15 @@ provider = client.create_identity_provider(
     claim_names=token_issuer.claim_names,
 )
 
-# Point one of your organisation ids at an IOCloud tenant. Without this, logins
-# fail with `invalid_target`.
-client.map_external_tenant(
-    provider_uuid=provider.uuid,
-    tenant_uuid=tenant.uuid,
-    external_tenant_id="acme-tenant-1",
-)
+# Give a tenant of that application the organisation id your tokens carry.
+# Without it, logins fail with `invalid_target`.
+client.set_tenant_external_id(tenant_uuid=tenant.uuid, external_id="acme-tenant-1")
 ```
+
+The provider belongs to that application: a token it signs logs users into the
+application's tenants only. An application may have several providers, and any
+of them logs in any of its users, so they must all sign the same tenant and user
+ids.
 
 Passing the issuer's own `jwks_url` and `claim_names` is what keeps the
 registration and the tokens you sign from drifting apart.
@@ -203,19 +205,54 @@ session.expires_at     # no refresh tokens; sign and exchange again
 One call signs the subject token and exchanges it. Use
 `exchange_subject_token(subject_token=...)` if the token was signed elsewhere.
 
-`subject` is the identity key IOCloud stores. It must be stable across logins and
-never reused for a different person — an email change at your end must not
-change it.
+`subject` is the identity key IOCloud stores — the user's `external_id` within
+its tenant. It must be stable across logins and never reused for a different
+person — an email change at your end must not change it.
 
 A rejected exchange raises `IOCloudTokenExchangeError` with the RFC 6749 body:
 
 | `error` | Cause |
 | --- | --- |
-| `invalid_grant` | Unknown or disabled issuer, signature does not verify against the published JWKS, wrong audience, token expired or replayed, missing claims, unverified email where required, or an unknown subject with JIT provisioning off. |
-| `invalid_target` | The tenant claim is not mapped to an IOCloud tenant, or the mapped tenant is not active. |
+| `invalid_grant` | Unknown or disabled issuer, signature does not verify against the published JWKS, wrong audience, token expired or replayed, missing claims, unverified email where required, a subject no user of the tenant has as its `external_id` with JIT provisioning off, or a user that is not active — a pre-created user is `pending` until activated. |
+| `invalid_target` | No tenant of the provider's application has the tenant claim as its `external_id`, or that tenant is not active. |
 
 `IOCloudFederationError` signals local misconfiguration — no signing key, an
 unreadable PEM — before any request is made.
+
+### Federation with just-in-time provisioning off
+
+With `allow_jit_users=False`, a login reaches only a user that already exists.
+Create each one with the `sub` your tokens will carry as its `external_id`, then
+activate it — a user created this way starts `pending`. The user endpoints are
+tenant-scoped, so these calls take a tenant credential instead of the partner
+token, and refresh the tenant token once on a `401`:
+
+```python
+# The secret is returned once, at creation: persist it for later user calls.
+credential = client.create_tenant_credentials(tenant_uuid=tenant.uuid)
+
+user = client.create_user(
+    name="Dana Okafor",
+    email="dana.okafor@acme.example",
+    external_id="acme-user-1001",       # the `sub` your tokens carry
+    tenant_client_id=credential.client_id,
+    tenant_client_secret=credential.client_secret,
+)
+user.status                             # "pending"
+
+client.update_user_status(
+    user_uuid=user.uuid,
+    status="active",
+    tenant_client_id=credential.client_id,
+    tenant_client_secret=credential.client_secret,
+)
+
+client.federated_login(subject="acme-user-1001", external_tenant_id="acme-tenant-1")
+```
+
+An `external_id` another user of the tenant already holds is refused with
+`USER_EXTERNAL_ID_TAKEN`. `update_user_status(..., status="deactivated")` stops
+a user's logins without deleting it.
 
 ### Rotating keys
 

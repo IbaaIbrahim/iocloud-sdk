@@ -7,8 +7,9 @@ use DateTimeImmutable;
 /**
  * The platform's trust anchor for one partner issuer.
  *
- * Every field is an instruction to the platform's token validator; a subject
- * token overrides none of them.
+ * It belongs to one of the partner's applications: a token it signs logs users
+ * into that application's tenants only. Every field is an instruction to the
+ * platform's token validator; a subject token overrides none of them.
  */
 final readonly class IdentityProvider
 {
@@ -18,6 +19,7 @@ final readonly class IdentityProvider
      */
     public function __construct(
         public string $uuid,
+        public string $applicationUuid,
         public string $name,
         public string $issuer,
         public string $jwksUrl,
@@ -37,6 +39,7 @@ final readonly class IdentityProvider
     {
         return new self(
             uuid: (string) $payload['uuid'],
+            applicationUuid: (string) $payload['application_uuid'],
             name: (string) $payload['name'],
             issuer: (string) $payload['issuer'],
             jwksUrl: (string) $payload['jwks_url'],

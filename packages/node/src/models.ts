@@ -13,20 +13,41 @@ export interface TenantCredential {
   clientSecret: string;
 }
 
+/**
+ * A tenant (space) inside one of the partner's applications.
+ *
+ * `externalId` is the partner's own id for the organisation: the value its
+ * subject tokens carry in the tenant claim, unique within the application. A
+ * federated login reaches the tenant only through it, so a tenant with none
+ * (`null`) cannot be logged into.
+ */
 export interface Tenant {
   uuid: string;
   applicationUuid: string;
   name: string;
   slug: string;
   contactEmail: string;
+  externalId: string | null;
   status: string;
   createdAt: Date;
 }
 
-export interface ExternalTenantMapping {
-  identityProviderUuid: string;
+/**
+ * A user inside one of the partner's tenants.
+ *
+ * `externalId` is the partner's own id for the person: the value its subject
+ * tokens carry in the user claim (`sub` by default), unique within the tenant.
+ * A federated login finds the user by it, never by email, so a user with none
+ * (`null`) is one no federated login reaches. A user the partner creates
+ * starts `pending` and cannot log in until activated.
+ */
+export interface User {
+  uuid: string;
   tenantUuid: string;
-  externalTenantId: string;
+  name: string;
+  email: string;
+  externalId: string | null;
+  status: string;
   createdAt: Date;
 }
 
@@ -45,12 +66,14 @@ export interface SubjectTokenClaimNames {
 }
 
 /**
- * The platform's trust anchor for one partner issuer. Every field is an
- * instruction to the platform's token validator; a subject token overrides
- * none of them.
+ * The platform's trust anchor for one partner issuer. It belongs to one of the
+ * partner's applications: a token it signs logs users into that application's
+ * tenants only. Every field is an instruction to the platform's token
+ * validator; a subject token overrides none of them.
  */
 export interface IdentityProvider {
   uuid: string;
+  applicationUuid: string;
   name: string;
   issuer: string;
   jwksUrl: string;
@@ -98,6 +121,12 @@ export interface JsonWebKeySet {
 }
 
 export interface CreateIdentityProviderInput {
+  /**
+   * The application the provider belongs to. Its tokens log users into that
+   * application's tenants only, and every provider of one application must
+   * sign the same tenant and user ids.
+   */
+  applicationUuid: string;
   name: string;
   issuer: string;
   /** Defaults to `<issuer>/.well-known/jwks.json`. */
@@ -124,13 +153,17 @@ export interface CreateTenantInput {
   name: string;
   slug: string;
   contactEmail: string;
+  /**
+   * The id your subject tokens carry in the tenant claim, unique within the
+   * application. Omit it and set it later with `setTenantExternalId`.
+   */
+  externalId?: string | null;
 }
 
-export interface MapExternalTenantInput {
-  providerUuid: string;
+export interface SetTenantExternalIdInput {
   tenantUuid: string;
-  externalTenantId: string;
-  accessToken?: string;
+  /** Required: `null` clears it, which stops federated logins into the tenant. */
+  externalId: string | null;
 }
 
 export interface IssueTenantTokenInput {
@@ -142,6 +175,22 @@ export interface IssueTenantTokenInput {
 export interface SetUserPersonaInput {
   userUuid: string;
   persona: string;
+  tenantClientId: string;
+  tenantClientSecret: string;
+}
+
+export interface CreateUserInput {
+  name: string;
+  email: string;
+  tenantClientId: string;
+  tenantClientSecret: string;
+  /** The id your subject tokens carry in the user claim (`sub` by default). */
+  externalId?: string | null;
+}
+
+export interface UpdateUserStatusInput {
+  userUuid: string;
+  status: "active" | "deactivated";
   tenantClientId: string;
   tenantClientSecret: string;
 }

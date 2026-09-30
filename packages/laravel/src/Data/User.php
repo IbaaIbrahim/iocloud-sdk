@@ -5,21 +5,21 @@ namespace IOCloud\Laravel\Data;
 use DateTimeImmutable;
 
 /**
- * A tenant (space) inside one of the partner's applications.
+ * A user inside one of the partner's tenants.
  *
- * `externalId` is the partner's own id for the organisation: the value its
- * subject tokens carry in the tenant claim, unique within the application. A
- * federated login reaches the tenant only through it, so a tenant with none
- * (null) cannot be logged into.
+ * `externalId` is the partner's own id for the person: the value its subject
+ * tokens carry in the user claim (`sub` by default), unique within the tenant.
+ * A federated login finds the user by it, never by email, so a user with none
+ * (null) is one no federated login reaches. A user the partner creates starts
+ * `pending` and cannot log in until activated.
  */
-final readonly class Tenant
+final readonly class User
 {
     public function __construct(
         public string $uuid,
-        public string $applicationUuid,
+        public string $tenantUuid,
         public string $name,
-        public string $slug,
-        public string $contactEmail,
+        public string $email,
         public ?string $externalId,
         public string $status,
         public DateTimeImmutable $createdAt,
@@ -33,10 +33,9 @@ final readonly class Tenant
 
         return new self(
             uuid: (string) $payload['uuid'],
-            applicationUuid: (string) $payload['application_uuid'],
+            tenantUuid: (string) $payload['tenant_uuid'],
             name: (string) $payload['name'],
-            slug: (string) $payload['slug'],
-            contactEmail: (string) $payload['contact_email'],
+            email: (string) $payload['email'],
             externalId: $externalId === null ? null : (string) $externalId,
             status: (string) $payload['status'],
             createdAt: new DateTimeImmutable((string) $payload['created_at']),

@@ -26,8 +26,11 @@ final class ClientFederationTest extends TestCase
         ],
     ];
 
+    private const APPLICATION_UUID = '11111111-1111-4111-8111-111111111111';
+
     private const PROVIDER_BODY = [
         'uuid' => '4be507fc-2a1b-4e19-9f0e-2c7f7f5f8a11',
+        'application_uuid' => self::APPLICATION_UUID,
         'name' => 'Acme Portal',
         'issuer' => 'https://portal.acme.example',
         'jwks_url' => 'https://portal.acme.example/.well-known/jwks.json',
@@ -65,6 +68,7 @@ final class ClientFederationTest extends TestCase
         ]);
 
         $provider = $this->client()->createIdentityProvider(
+            applicationUuid: self::APPLICATION_UUID,
             name: 'Acme Portal',
             issuer: 'https://portal.acme.example/',
             allowedAudiences: ['ai-ecosystem'],
@@ -78,7 +82,8 @@ final class ClientFederationTest extends TestCase
             }
             $body = $request->data();
 
-            return $body['issuer'] === 'https://portal.acme.example'
+            return $body['application_uuid'] === self::APPLICATION_UUID
+                && $body['issuer'] === 'https://portal.acme.example'
                 && $body['jwks_url'] === 'https://portal.acme.example/.well-known/jwks.json'
                 && $body['allowed_algorithms'] === ['RS256']
                 && $body['token_max_age_seconds'] === 900
@@ -87,6 +92,7 @@ final class ClientFederationTest extends TestCase
                 && $request->hasHeader('Authorization', 'Bearer partner-token');
         });
         $this->assertSame(self::PROVIDER_BODY['uuid'], $provider->uuid);
+        $this->assertSame(self::APPLICATION_UUID, $provider->applicationUuid);
         $this->assertTrue($provider->isActive());
         $this->assertSame('tenant_id', $provider->claimNames->tenant);
     }
@@ -102,6 +108,7 @@ final class ClientFederationTest extends TestCase
         ]);
 
         $this->client()->createIdentityProvider(
+            applicationUuid: self::APPLICATION_UUID,
             name: 'Acme Portal',
             issuer: 'https://portal.acme.example',
             allowedAudiences: ['ai-ecosystem'],
@@ -137,6 +144,7 @@ final class ClientFederationTest extends TestCase
             || ($request->method() === 'GET' && $request->body() === ''));
         $this->assertCount(1, $providers);
         $this->assertSame('Acme Portal', $providers[0]->name);
+        $this->assertSame(self::APPLICATION_UUID, $providers[0]->applicationUuid);
     }
 
     public function test_it_posts_the_rfc_8693_form_grammar_without_a_partner_token(): void

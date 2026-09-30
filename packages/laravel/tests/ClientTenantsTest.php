@@ -1,0 +1,325 @@
+<?php
+
+namespace IOCloud\Laravel\Tests;
+
+use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\Http;
+use IOCloud\Laravel\Exceptions\IOCloudAPIException;
+use IOCloud\Laravel\IOCloudClient;
+
+final class ClientTenantsTest extends TestCase
+{
+    private const APPLICATION_UUID = '11111111-1111-4111-8111-111111111111';
+    private const TENANT_UUID = '3f1b1f70-0000-4000-8000-0000000000d1';
+    private const USER_UUID = '3f1b1f70-0000-4000-8000-0000000000f1';
+
+    /** @return array<string, mixed> */
+    private function tenantPayload(array $overrides = []): array
+    {
+        return array_merge([
+            'uuid' => self::TENANT_UUID,
+            'application_uuid' => self::APPLICATION_UUID,
+            'name' => 'Acme Ltd',
+            'slug' => 'acme',
+            'contact_email' => 'ops@acme.example',
+            'external_id' => 'acme',
+            'status' => 'active',
+            'created_at' => '2026-09-30T00:00:00Z',
+        ], $overrides);
+    }
+
+    /** @return array<string, mixed> */
+    private function userPayload(array $overrides = []): array
+    {
+        return array_merge([
+            'uuid' => self::USER_UUID,
+            'tenant_uuid' => self::TENANT_UUID,
+            'name' => 'Dana Okafor',
+            'email' => 'dana.okafor@acme.example',
+            'external_id' => 'acme-user-1001',
+            'status' => 'pending',
+            'created_at' => '2026-09-30T00:00:00Z',
+        ], $overrides);
+    }
+
+    private function fakeToken(string $endpoint, string $accessToken): array
+    {
+        return [
+            "api.example.com{$endpoint}" => Http::response([
+                'data' => [
+                    'token' => [
+                        'access_token' => $accessToken,
+                        'token_type' => 'Bearer',
+                        'expires_at' => '2099-01-01T00:00:00Z',
+                    ],
+                ],
+            ]),
+        ];
+    }
+
+    private function fakePartnerToken(): array
+    {
+        return $this->fakeToken('/v1/partner/auth/token', 'partner-token');
+    }
+
+    private function fakeTenantToken(): array
+    {
+        return $this->fakeToken('/v1/tenant/auth/token', 'tenant-token');
+    }
+
+    private function sentTo(string $method, string $path): int
+    {
+        return Http::recorded(fn (Request $request): bool => $request->method() === $method
+            && str_ends_with($request->url(), $path))->count();
+    }
+
+    public function test_it_creates_a_tenant_with_the_external_id_the_tokens_carry(): void
+    {
+        $path = '/v1/partner/applications/'.self::APPLICATION_UUID.'/tenants';
+        Http::fake($this->fakePartnerToken() + [
+            "api.example.com{$path}" => Http::response(['data' => ['tenant' => $this->tenantPayload()]], 201),
+        ]);
+
+        $tenant = $this->app->make(IOCloudClient::class)->createTenant(
+            applicationUuid: self::APPLICATION_UUID,
+            name: 'Acme Ltd',
+            slug: 'acme',
+            contactEmail: 'ops@acme.example',
+            externalId: 'acme',
+        );
+
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'POST'
+            && str_ends_with($request->url(), $path)
+            && $request->hasHeader('Authorization', 'Bearer partner-token')
+            && $request->data() === [
+                'name' => 'Acme Ltd',
+                'slug' => 'acme',
+                'contact_email' => 'ops@acme.example',
+                'external_id' => 'acme',
+            ]);
+        $this->assertSame(self::APPLICATION_UUID, $tenant->applicationUuid);
+        $this->assertSame('acme', $tenant->externalId);
+    }
+
+    public function test_a_tenant_without_an_external_id_omits_it_and_reads_null(): void
+    {
+        $path = '/v1/partner/applications/'.self::APPLICATION_UUID.'/tenants';
+        Http::fake($this->fakePartnerToken() + [
+            "api.example.com{$path}" => Http::response([
+                'data' => ['tenant' => $this->tenantPayload(['external_id' => null])],
+            ], 201),
+        ]);
+
+        $tenant = $this->app->make(IOCloudClient::class)->createTenant(
+            applicationUuid: self::APPLICATION_UUID,
+            name: 'Acme Ltd',
+            slug: 'acme',
+            contactEmail: 'ops@acme.example',
+        );
+
+        Http::assertSent(fn (Request $request): bool => str_ends_with($request->url(), $path)
+            && ! array_key_exists('external_id', $request->data()));
+        $this->assertNull($tenant->externalId);
+    }
+
+    public function test_it_sets_the_id_the_tenant_claim_resolves_to(): void
+    {
+        $path = '/v1/partner/tenants/'.self::TENANT_UUID.'/external-id';
+        Http::fake($this->fakePartnerToken() + [
+            "api.example.com{$path}" => Http::response(['data' => ['tenant' => $this->tenantPayload()]]),
+        ]);
+
+        $tenant = $this->app->make(IOCloudClient::class)
+            ->setTenantExternalId(self::TENANT_UUID, 'acme');
+
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'PATCH'
+            && str_ends_with($request->url(), $path)
+            && $request->hasHeader('Authorization', 'Bearer partner-token')
+            && $request->data() === ['external_id' => 'acme']);
+        $this->assertSame(self::TENANT_UUID, $tenant->uuid);
+        $this->assertSame('acme', $tenant->externalId);
+    }
+
+    public function test_clearing_the_external_id_sends_an_explicit_null(): void
+    {
+        // The key is required: null is what clears it, and an omitted key is a
+        // validation error rather than "leave it unchanged".
+        $path = '/v1/partner/tenants/'.self::TENANT_UUID.'/external-id';
+        Http::fake($this->fakePartnerToken() + [
+            "api.example.com{$path}" => Http::response([
+                'data' => ['tenant' => $this->tenantPayload(['external_id' => null])],
+            ]),
+        ]);
+
+        $tenant = $this->app->make(IOCloudClient::class)
+            ->setTenantExternalId(self::TENANT_UUID, null);
+
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'PATCH'
+            && str_ends_with($request->url(), $path)
+            && $request->data() === ['external_id' => null]);
+        $this->assertNull($tenant->externalId);
+    }
+
+    public function test_an_external_id_another_tenant_holds_is_refused(): void
+    {
+        $path = '/v1/partner/tenants/'.self::TENANT_UUID.'/external-id';
+        Http::fake($this->fakePartnerToken() + [
+            "api.example.com{$path}" => Http::response([
+                'code' => 'TENANT_EXTERNAL_ID_TAKEN',
+                'message' => 'Another tenant of this application holds it.',
+            ], 409),
+        ]);
+
+        try {
+            $this->app->make(IOCloudClient::class)->setTenantExternalId(self::TENANT_UUID, 'acme');
+            $this->fail('expected the external id to be refused');
+        } catch (IOCloudAPIException $exception) {
+            $this->assertSame(409, $exception->statusCode);
+            $this->assertSame('TENANT_EXTERNAL_ID_TAKEN', $exception->errorCode);
+        }
+    }
+
+    public function test_it_creates_a_user_under_a_tenant_token(): void
+    {
+        Http::fake($this->fakeTenantToken() + [
+            'api.example.com/v1/tenant/users' => Http::response(['data' => ['user' => $this->userPayload()]], 201),
+        ]);
+
+        $user = $this->app->make(IOCloudClient::class)->createUser(
+            name: 'Dana Okafor',
+            email: 'dana.okafor@acme.example',
+            tenantClientId: 'tenant-client-id',
+            tenantClientSecret: 'tenant-client-secret',
+            externalId: 'acme-user-1001',
+        );
+
+        Http::assertSent(fn (Request $request): bool => str_ends_with($request->url(), '/v1/tenant/auth/token')
+            && $request->data() === [
+                'client_id' => 'tenant-client-id',
+                'client_secret' => 'tenant-client-secret',
+            ]);
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'POST'
+            && str_ends_with($request->url(), '/v1/tenant/users')
+            && $request->hasHeader('Authorization', 'Bearer tenant-token')
+            && $request->data() === [
+                'name' => 'Dana Okafor',
+                'email' => 'dana.okafor@acme.example',
+                'external_id' => 'acme-user-1001',
+            ]);
+        Http::assertNotSent(fn (Request $request): bool => str_contains($request->url(), '/v1/partner/'));
+        $this->assertSame(self::USER_UUID, $user->uuid);
+        $this->assertSame(self::TENANT_UUID, $user->tenantUuid);
+        $this->assertSame('acme-user-1001', $user->externalId);
+        $this->assertSame('pending', $user->status);
+    }
+
+    public function test_a_user_without_an_external_id_omits_it_and_reads_null(): void
+    {
+        Http::fake($this->fakeTenantToken() + [
+            'api.example.com/v1/tenant/users' => Http::response([
+                'data' => ['user' => $this->userPayload(['external_id' => null])],
+            ], 201),
+        ]);
+
+        $user = $this->app->make(IOCloudClient::class)->createUser(
+            name: 'Dana Okafor',
+            email: 'dana.okafor@acme.example',
+            tenantClientId: 'tenant-client-id',
+            tenantClientSecret: 'tenant-client-secret',
+        );
+
+        Http::assertSent(fn (Request $request): bool => str_ends_with($request->url(), '/v1/tenant/users')
+            && ! array_key_exists('external_id', $request->data()));
+        $this->assertNull($user->externalId);
+    }
+
+    public function test_creating_a_user_refreshes_a_rejected_tenant_token_once(): void
+    {
+        Http::fake($this->fakeTenantToken() + [
+            'api.example.com/v1/tenant/users' => Http::sequence()
+                ->push(['code' => 'INVALID_TOKEN', 'message' => 'Revoked.'], 401)
+                ->push(['data' => ['user' => $this->userPayload()]], 201),
+        ]);
+
+        $user = $this->app->make(IOCloudClient::class)->createUser(
+            name: 'Dana Okafor',
+            email: 'dana.okafor@acme.example',
+            tenantClientId: 'tenant-client-id',
+            tenantClientSecret: 'tenant-client-secret',
+        );
+
+        $this->assertSame(2, $this->sentTo('POST', '/v1/tenant/auth/token'));
+        $this->assertSame(2, $this->sentTo('POST', '/v1/tenant/users'));
+        $this->assertSame(self::USER_UUID, $user->uuid);
+    }
+
+    public function test_an_external_id_another_user_holds_is_refused(): void
+    {
+        Http::fake($this->fakeTenantToken() + [
+            'api.example.com/v1/tenant/users' => Http::response([
+                'code' => 'USER_EXTERNAL_ID_TAKEN',
+                'message' => 'Another user of this tenant holds it.',
+            ], 409),
+        ]);
+
+        try {
+            $this->app->make(IOCloudClient::class)->createUser(
+                name: 'Dana Okafor',
+                email: 'dana.okafor@acme.example',
+                tenantClientId: 'tenant-client-id',
+                tenantClientSecret: 'tenant-client-secret',
+                externalId: 'acme-user-1001',
+            );
+            $this->fail('expected the external id to be refused');
+        } catch (IOCloudAPIException $exception) {
+            $this->assertSame('USER_EXTERNAL_ID_TAKEN', $exception->errorCode);
+        }
+        // A refusal is not an authentication failure, so nothing is retried.
+        $this->assertSame(1, $this->sentTo('POST', '/v1/tenant/users'));
+    }
+
+    public function test_it_activates_a_pending_user_under_a_tenant_token(): void
+    {
+        $path = '/v1/tenant/users/'.self::USER_UUID.'/status';
+        Http::fake($this->fakeTenantToken() + [
+            "api.example.com{$path}" => Http::response([
+                'data' => ['user' => $this->userPayload(['external_id' => null, 'status' => 'active'])],
+            ]),
+        ]);
+
+        $user = $this->app->make(IOCloudClient::class)->updateUserStatus(
+            userUuid: self::USER_UUID,
+            status: 'active',
+            tenantClientId: 'tenant-client-id',
+            tenantClientSecret: 'tenant-client-secret',
+        );
+
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'PATCH'
+            && str_ends_with($request->url(), $path)
+            && $request->hasHeader('Authorization', 'Bearer tenant-token')
+            && $request->data() === ['status' => 'active']);
+        $this->assertSame('active', $user->status);
+        $this->assertNull($user->externalId);
+    }
+
+    public function test_updating_a_status_refreshes_a_rejected_tenant_token_once(): void
+    {
+        $path = '/v1/tenant/users/'.self::USER_UUID.'/status';
+        Http::fake($this->fakeTenantToken() + [
+            "api.example.com{$path}" => Http::sequence()
+                ->push(['code' => 'INVALID_TOKEN', 'message' => 'Revoked.'], 401)
+                ->push(['data' => ['user' => $this->userPayload(['status' => 'active'])]]),
+        ]);
+
+        $user = $this->app->make(IOCloudClient::class)->updateUserStatus(
+            userUuid: self::USER_UUID,
+            status: 'active',
+            tenantClientId: 'tenant-client-id',
+            tenantClientSecret: 'tenant-client-secret',
+        );
+
+        $this->assertSame(2, $this->sentTo('POST', '/v1/tenant/auth/token'));
+        $this->assertSame(2, $this->sentTo('PATCH', $path));
+        $this->assertSame('active', $user->status);
+    }
+}

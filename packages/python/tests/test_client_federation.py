@@ -17,6 +17,7 @@ from iocloud_sdk import (
 from iocloud_sdk.federation import FederationSigningKey, SubjectTokenIssuer
 
 BASE_URL = "https://api.example.com"
+APPLICATION_UUID = "11111111-1111-4111-8111-111111111111"
 PARTNER_TOKEN_BODY = {
     "data": {
         "token": {
@@ -28,6 +29,7 @@ PARTNER_TOKEN_BODY = {
 }
 PROVIDER_BODY = {
     "uuid": "4be507fc-2a1b-4e19-9f0e-2c7f7f5f8a11",
+    "application_uuid": APPLICATION_UUID,
     "name": "Acme Portal",
     "issuer": "https://portal.acme.example",
     "jwks_url": "https://portal.acme.example/.well-known/jwks.json",
@@ -104,6 +106,7 @@ class CreateIdentityProviderTests(ClientFederationTestCase):
         )
 
         provider = client.create_identity_provider(
+            application_uuid=APPLICATION_UUID,
             name="Acme Portal",
             issuer="https://portal.acme.example/",
             allowed_audiences=["ai-ecosystem"],
@@ -113,6 +116,7 @@ class CreateIdentityProviderTests(ClientFederationTestCase):
 
         sent = transport.request_to("/v1/partner/federation/providers")
         body = json.loads(sent.content)
+        self.assertEqual(body["application_uuid"], APPLICATION_UUID)
         self.assertEqual(body["issuer"], "https://portal.acme.example")
         self.assertEqual(
             body["jwks_url"], "https://portal.acme.example/.well-known/jwks.json"
@@ -123,6 +127,7 @@ class CreateIdentityProviderTests(ClientFederationTestCase):
         self.assertTrue(body["allow_jit_users"])
         self.assertEqual(sent.headers["authorization"], "Bearer partner-token")
         self.assertEqual(str(provider.uuid), PROVIDER_BODY["uuid"])
+        self.assertEqual(str(provider.application_uuid), APPLICATION_UUID)
         self.assertTrue(provider.is_active)
 
     def test_it_registers_the_claim_names_the_issuer_will_emit(self) -> None:
@@ -136,6 +141,7 @@ class CreateIdentityProviderTests(ClientFederationTestCase):
         )
 
         client.create_identity_provider(
+            application_uuid=APPLICATION_UUID,
             name="Acme Portal",
             issuer="https://portal.acme.example",
             allowed_audiences=["ai-ecosystem"],
@@ -163,6 +169,7 @@ class CreateIdentityProviderTests(ClientFederationTestCase):
         providers = client.list_identity_providers()
 
         self.assertEqual(len(providers), 1)
+        self.assertEqual(str(providers[0].application_uuid), APPLICATION_UUID)
         self.assertEqual(
             providers[0].claim_names,
             SubjectTokenClaimNames(

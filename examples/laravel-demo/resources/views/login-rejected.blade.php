@@ -25,8 +25,8 @@
         <tr>
             <th><code>invalid_target</code></th>
             <td>
-                The token's tenant claim is not mapped to an IOCloud tenant, or the
-                mapped tenant is not active. Run
+                No tenant of the provider's application carries the token's tenant
+                claim as its external id, or that tenant is not active. Run
                 <code>php artisan demo:federation:register --tenant=&lt;uuid&gt;</code>.
             </td>
         </tr>

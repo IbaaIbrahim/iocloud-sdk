@@ -58,18 +58,21 @@ final readonly class PartnerFederation
     }
 
     /**
-     * Register this portal as a trusted issuer on IOCloud.
+     * Register this portal as a trusted issuer on IOCloud, for one application.
      *
-     * Issuer, JWKS URL, and claim names all come from the same configuration the
-     * SDK signs and publishes with, so what is registered is exactly what this
+     * A token it signs logs users into that application's tenants only. Issuer,
+     * JWKS URL, and claim names all come from the same configuration the SDK
+     * signs and publishes with, so what is registered is exactly what this
      * portal produces.
      */
     public function registerAsIdentityProvider(
+        string $applicationUuid,
         string $name,
         bool $requireEmailVerified,
         bool $allowJitUsers,
     ): IdentityProvider {
         return $this->iocloud->createIdentityProvider(
+            applicationUuid: $applicationUuid,
             name: $name,
             issuer: $this->federation->requireIssuer(),
             allowedAudiences: [$this->federation->audience],
@@ -100,20 +103,19 @@ final readonly class PartnerFederation
     }
 
     /**
-     * Point one of the portal's organisation ids at an IOCloud tenant.
+     * Give an IOCloud tenant one of the portal's organisation ids as its external id.
      *
-     * Until this exists the exchange fails with `invalid_target`: IOCloud has no
-     * tenant to place the user in.
+     * The token's tenant claim resolves to the tenant of the provider's
+     * application that carries it. Until one does, the exchange fails with
+     * `invalid_target`: IOCloud has no tenant to place the user in.
      */
-    public function mapTenant(
-        string $providerUuid,
+    public function setTenantExternalId(
         string $iocloudTenantUuid,
         string $externalTenantId,
     ): void {
-        $this->iocloud->mapExternalTenant(
-            providerUuid: $providerUuid,
+        $this->iocloud->setTenantExternalId(
             tenantUuid: $iocloudTenantUuid,
-            externalTenantId: $externalTenantId,
+            externalId: $externalTenantId,
         );
     }
 }

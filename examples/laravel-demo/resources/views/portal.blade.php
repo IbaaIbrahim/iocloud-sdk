@@ -75,7 +75,7 @@
 
         <div class="note">
             Set up once: <code>php artisan iocloud:keys</code>, then
-            <code>php artisan demo:federation:register --tenant=&lt;iocloud-tenant-uuid&gt;</code>
+            <code>php artisan demo:federation:register --application=&lt;iocloud-application-uuid&gt; --tenant=&lt;iocloud-tenant-uuid&gt;</code>
         </div>
     @endif
 @endsection

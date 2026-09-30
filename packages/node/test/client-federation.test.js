@@ -12,6 +12,7 @@ import {
 } from "../dist/index.js";
 
 const BASE_URL = "https://api.example.com";
+const APPLICATION_UUID = "11111111-1111-4111-8111-111111111111";
 const PARTNER_TOKEN_BODY = {
   data: {
     token: {
@@ -23,6 +24,7 @@ const PARTNER_TOKEN_BODY = {
 };
 const PROVIDER_BODY = {
   uuid: "4be507fc-2a1b-4e19-9f0e-2c7f7f5f8a11",
+  application_uuid: APPLICATION_UUID,
   name: "Acme Portal",
   issuer: "https://portal.acme.example",
   jwks_url: "https://portal.acme.example/.well-known/jwks.json",
@@ -87,6 +89,7 @@ test("createIdentityProvider derives the JWKS URL from the issuer", async () => 
   });
 
   const provider = await client.createIdentityProvider({
+    applicationUuid: APPLICATION_UUID,
     name: "Acme Portal",
     issuer: "https://portal.acme.example/",
     allowedAudiences: ["ai-ecosystem"],
@@ -96,6 +99,7 @@ test("createIdentityProvider derives the JWKS URL from the issuer", async () => 
 
   const sent = requestTo("/v1/partner/federation/providers");
   const body = JSON.parse(sent.body);
+  assert.equal(body.application_uuid, APPLICATION_UUID);
   assert.equal(body.issuer, "https://portal.acme.example");
   assert.equal(
     body.jwks_url,
@@ -107,6 +111,7 @@ test("createIdentityProvider derives the JWKS URL from the issuer", async () => 
   assert.equal(body.allow_jit_users, true);
   assert.equal(sent.headers.get("authorization"), "Bearer partner-token");
   assert.equal(provider.uuid, PROVIDER_BODY.uuid);
+  assert.equal(provider.applicationUuid, APPLICATION_UUID);
   assert.deepEqual(provider.claimNames, {
     user: "sub",
     tenant: "tenant_id",
@@ -129,6 +134,7 @@ test("createIdentityProvider registers the claim names the issuer emits", async 
   });
 
   await client.createIdentityProvider({
+    applicationUuid: APPLICATION_UUID,
     name: "Acme Portal",
     issuer: "https://portal.acme.example",
     allowedAudiences: ["ai-ecosystem"],
@@ -163,6 +169,7 @@ test("listIdentityProviders sends a GET with no request body", async () => {
   assert.equal(sent.headers.has("content-type"), false);
   assert.equal(providers.length, 1);
   assert.equal(providers[0].status, "active");
+  assert.equal(providers[0].applicationUuid, APPLICATION_UUID);
 });
 
 test("exchangeSubjectToken posts the RFC 8693 form grammar unauthenticated", async () => {

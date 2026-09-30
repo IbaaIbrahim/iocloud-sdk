@@ -1,0 +1,421 @@
+import json
+import unittest
+
+import httpx
+
+from iocloud_sdk import IOCloudAPIError, IOCloudClient
+
+_BASE_URL = "https://api.example.com"
+_APPLICATION_UUID = "11111111-1111-4111-8111-111111111111"
+_TENANT_UUID = "3f1b1f70-0000-4000-8000-0000000000d1"
+_USER_UUID = "3f1b1f70-0000-4000-8000-0000000000f1"
+
+_PARTNER_TOKEN = {
+    "data": {
+        "token": {
+            "access_token": "partner-token",
+            "token_type": "Bearer",
+            "expires_at": "2099-01-01T00:00:00Z",
+        }
+    }
+}
+_TENANT_TOKEN = {
+    "data": {
+        "token": {
+            "access_token": "tenant-token",
+            "token_type": "Bearer",
+            "expires_at": "2099-01-01T00:00:00Z",
+        }
+    }
+}
+
+_TENANT = {
+    "uuid": _TENANT_UUID,
+    "application_uuid": _APPLICATION_UUID,
+    "name": "Acme Ltd",
+    "slug": "acme",
+    "contact_email": "ops@acme.example",
+    "external_id": "acme",
+    "status": "active",
+    "created_at": "2026-09-30T00:00:00Z",
+}
+_USER = {
+    "uuid": _USER_UUID,
+    "tenant_uuid": _TENANT_UUID,
+    "name": "Dana Okafor",
+    "email": "dana.okafor@acme.example",
+    "external_id": "acme-user-1001",
+    "status": "pending",
+    "created_at": "2026-09-30T00:00:00Z",
+}
+
+_TENANT_CREDENTIAL = {
+    "tenant_client_id": "tenant-client-id",
+    "tenant_client_secret": "tenant-client-secret",
+}
+
+
+class ScriptedTransport:
+    """Replies per (method, path) from a queue and records every request.
+
+    The last response in a queue repeats, so a token endpoint answers any
+    number of issues from one entry.
+    """
+
+    def __init__(
+        self, responses: dict[tuple[str, str], list[httpx.Response]]
+    ) -> None:
+        self._responses = {key: list(queue) for key, queue in responses.items()}
+        self.requests: list[httpx.Request] = []
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        queue = self._responses.get((request.method, request.url.path))
+        if not queue:
+            raise AssertionError(f"unexpected {request.method} {request.url.path}")
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    def sent(self, method: str, path: str) -> list[httpx.Request]:
+        return [
+            request
+            for request in self.requests
+            if request.method == method and request.url.path == path
+        ]
+
+
+class TenantClientTestCase(unittest.TestCase):
+    def build_client(
+        self, responses: dict[tuple[str, str], list[httpx.Response]]
+    ) -> tuple[IOCloudClient, ScriptedTransport]:
+        transport = ScriptedTransport(responses)
+        http_client = httpx.Client(transport=httpx.MockTransport(transport.handler))
+        self.addCleanup(http_client.close)
+        client = IOCloudClient(
+            client_id="client-id",
+            client_secret="client-secret",
+            base_url=_BASE_URL,
+            http_client=http_client,
+        )
+        return client, transport
+
+
+class CreateTenantTests(TenantClientTestCase):
+    _PATH = f"/v1/partner/applications/{_APPLICATION_UUID}/tenants"
+
+    def test_it_sends_the_external_id_the_tokens_will_carry(self) -> None:
+        client, transport = self.build_client(
+            {
+                ("POST", "/v1/partner/auth/token"): [
+                    httpx.Response(200, json=_PARTNER_TOKEN)
+                ],
+                ("POST", self._PATH): [
+                    httpx.Response(201, json={"data": {"tenant": _TENANT}})
+                ],
+            }
+        )
+
+        tenant = client.create_tenant(
+            application_uuid=_APPLICATION_UUID,
+            name="Acme Ltd",
+            slug="acme",
+            contact_email="ops@acme.example",
+            external_id="acme",
+        )
+
+        [sent] = transport.sent("POST", self._PATH)
+        self.assertEqual(
+            json.loads(sent.content),
+            {
+                "name": "Acme Ltd",
+                "slug": "acme",
+                "contact_email": "ops@acme.example",
+                "external_id": "acme",
+            },
+        )
+        self.assertEqual(sent.headers["authorization"], "Bearer partner-token")
+        self.assertEqual(str(tenant.application_uuid), _APPLICATION_UUID)
+        self.assertEqual(tenant.external_id, "acme")
+
+    def test_a_tenant_without_an_external_id_omits_it_and_reads_none(self) -> None:
+        client, transport = self.build_client(
+            {
+                ("POST", "/v1/partner/auth/token"): [
+                    httpx.Response(200, json=_PARTNER_TOKEN)
+                ],
+                ("POST", self._PATH): [
+                    httpx.Response(
+                        201,
+                        json={"data": {"tenant": {**_TENANT, "external_id": None}}},
+                    )
+                ],
+            }
+        )
+
+        tenant = client.create_tenant(
+            application_uuid=_APPLICATION_UUID,
+            name="Acme Ltd",
+            slug="acme",
+            contact_email="ops@acme.example",
+        )
+
+        [sent] = transport.sent("POST", self._PATH)
+        self.assertNotIn("external_id", json.loads(sent.content))
+        self.assertIsNone(tenant.external_id)
+
+
+class SetTenantExternalIdTests(TenantClientTestCase):
+    _PATH = f"/v1/partner/tenants/{_TENANT_UUID}/external-id"
+
+    def test_it_patches_the_id_the_tenant_claim_resolves_to(self) -> None:
+        client, transport = self.build_client(
+            {
+                ("POST", "/v1/partner/auth/token"): [
+                    httpx.Response(200, json=_PARTNER_TOKEN)
+                ],
+                ("PATCH", self._PATH): [
+                    httpx.Response(200, json={"data": {"tenant": _TENANT}})
+                ],
+            }
+        )
+
+        tenant = client.set_tenant_external_id(
+            tenant_uuid=_TENANT_UUID, external_id="acme"
+        )
+
+        [sent] = transport.sent("PATCH", self._PATH)
+        self.assertEqual(json.loads(sent.content), {"external_id": "acme"})
+        self.assertEqual(sent.headers["authorization"], "Bearer partner-token")
+        self.assertEqual(str(tenant.uuid), _TENANT_UUID)
+        self.assertEqual(tenant.external_id, "acme")
+
+    def test_clearing_sends_an_explicit_null(self) -> None:
+        # The key is required: null is what clears it, and an omitted key is
+        # a validation error rather than "leave it unchanged".
+        client, transport = self.build_client(
+            {
+                ("POST", "/v1/partner/auth/token"): [
+                    httpx.Response(200, json=_PARTNER_TOKEN)
+                ],
+                ("PATCH", self._PATH): [
+                    httpx.Response(
+                        200,
+                        json={"data": {"tenant": {**_TENANT, "external_id": None}}},
+                    )
+                ],
+            }
+        )
+
+        tenant = client.set_tenant_external_id(
+            tenant_uuid=_TENANT_UUID, external_id=None
+        )
+
+        [sent] = transport.sent("PATCH", self._PATH)
+        self.assertEqual(json.loads(sent.content), {"external_id": None})
+        self.assertIsNone(tenant.external_id)
+
+    def test_an_id_another_tenant_holds_is_refused(self) -> None:
+        client, _ = self.build_client(
+            {
+                ("POST", "/v1/partner/auth/token"): [
+                    httpx.Response(200, json=_PARTNER_TOKEN)
+                ],
+                ("PATCH", self._PATH): [
+                    httpx.Response(
+                        409,
+                        json={
+                            "code": "TENANT_EXTERNAL_ID_TAKEN",
+                            "message": "Another tenant of this application holds it.",
+                        },
+                    )
+                ],
+            }
+        )
+
+        with self.assertRaises(IOCloudAPIError) as raised:
+            client.set_tenant_external_id(tenant_uuid=_TENANT_UUID, external_id="acme")
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.code, "TENANT_EXTERNAL_ID_TAKEN")
+
+
+class CreateUserTests(TenantClientTestCase):
+    def test_it_creates_the_user_under_a_tenant_token(self) -> None:
+        client, transport = self.build_client(
+            {
+                ("POST", "/v1/tenant/auth/token"): [
+                    httpx.Response(200, json=_TENANT_TOKEN)
+                ],
+                ("POST", "/v1/tenant/users"): [
+                    httpx.Response(201, json={"data": {"user": _USER}})
+                ],
+            }
+        )
+
+        user = client.create_user(
+            name="Dana Okafor",
+            email="dana.okafor@acme.example",
+            external_id="acme-user-1001",
+            **_TENANT_CREDENTIAL,
+        )
+
+        [token_request] = transport.sent("POST", "/v1/tenant/auth/token")
+        self.assertEqual(
+            json.loads(token_request.content),
+            {"client_id": "tenant-client-id", "client_secret": "tenant-client-secret"},
+        )
+        [sent] = transport.sent("POST", "/v1/tenant/users")
+        self.assertEqual(
+            json.loads(sent.content),
+            {
+                "name": "Dana Okafor",
+                "email": "dana.okafor@acme.example",
+                "external_id": "acme-user-1001",
+            },
+        )
+        self.assertEqual(sent.headers["authorization"], "Bearer tenant-token")
+        self.assertEqual(transport.sent("POST", "/v1/partner/auth/token"), [])
+        self.assertEqual(str(user.uuid), _USER_UUID)
+        self.assertEqual(str(user.tenant_uuid), _TENANT_UUID)
+        self.assertEqual(user.external_id, "acme-user-1001")
+        self.assertEqual(user.status, "pending")
+
+    def test_a_user_without_an_external_id_omits_it_and_reads_none(self) -> None:
+        client, transport = self.build_client(
+            {
+                ("POST", "/v1/tenant/auth/token"): [
+                    httpx.Response(200, json=_TENANT_TOKEN)
+                ],
+                ("POST", "/v1/tenant/users"): [
+                    httpx.Response(
+                        201, json={"data": {"user": {**_USER, "external_id": None}}}
+                    )
+                ],
+            }
+        )
+
+        user = client.create_user(
+            name="Dana Okafor", email="dana.okafor@acme.example", **_TENANT_CREDENTIAL
+        )
+
+        [sent] = transport.sent("POST", "/v1/tenant/users")
+        self.assertNotIn("external_id", json.loads(sent.content))
+        self.assertIsNone(user.external_id)
+
+    def test_a_rejected_tenant_token_is_refreshed_once(self) -> None:
+        client, transport = self.build_client(
+            {
+                ("POST", "/v1/tenant/auth/token"): [
+                    httpx.Response(200, json=_TENANT_TOKEN)
+                ],
+                ("POST", "/v1/tenant/users"): [
+                    httpx.Response(
+                        401, json={"code": "INVALID_TOKEN", "message": "Revoked."}
+                    ),
+                    httpx.Response(201, json={"data": {"user": _USER}}),
+                ],
+            }
+        )
+
+        user = client.create_user(
+            name="Dana Okafor", email="dana.okafor@acme.example", **_TENANT_CREDENTIAL
+        )
+
+        self.assertEqual(len(transport.sent("POST", "/v1/tenant/auth/token")), 2)
+        self.assertEqual(len(transport.sent("POST", "/v1/tenant/users")), 2)
+        self.assertEqual(str(user.uuid), _USER_UUID)
+
+    def test_an_external_id_another_user_holds_is_refused(self) -> None:
+        client, transport = self.build_client(
+            {
+                ("POST", "/v1/tenant/auth/token"): [
+                    httpx.Response(200, json=_TENANT_TOKEN)
+                ],
+                ("POST", "/v1/tenant/users"): [
+                    httpx.Response(
+                        409,
+                        json={
+                            "code": "USER_EXTERNAL_ID_TAKEN",
+                            "message": "Another user of this tenant holds it.",
+                        },
+                    )
+                ],
+            }
+        )
+
+        with self.assertRaises(IOCloudAPIError) as raised:
+            client.create_user(
+                name="Dana Okafor",
+                email="dana.okafor@acme.example",
+                external_id="acme-user-1001",
+                **_TENANT_CREDENTIAL,
+            )
+
+        self.assertEqual(raised.exception.code, "USER_EXTERNAL_ID_TAKEN")
+        # A refusal is not an authentication failure, so nothing is retried.
+        self.assertEqual(len(transport.sent("POST", "/v1/tenant/users")), 1)
+
+
+class UpdateUserStatusTests(TenantClientTestCase):
+    _PATH = f"/v1/tenant/users/{_USER_UUID}/status"
+
+    def test_it_activates_a_pending_user_under_a_tenant_token(self) -> None:
+        client, transport = self.build_client(
+            {
+                ("POST", "/v1/tenant/auth/token"): [
+                    httpx.Response(200, json=_TENANT_TOKEN)
+                ],
+                ("PATCH", self._PATH): [
+                    httpx.Response(
+                        200,
+                        json={
+                            "data": {
+                                "user": {
+                                    **_USER,
+                                    "external_id": None,
+                                    "status": "active",
+                                }
+                            }
+                        },
+                    )
+                ],
+            }
+        )
+
+        user = client.update_user_status(
+            user_uuid=_USER_UUID, status="active", **_TENANT_CREDENTIAL
+        )
+
+        [sent] = transport.sent("PATCH", self._PATH)
+        self.assertEqual(json.loads(sent.content), {"status": "active"})
+        self.assertEqual(sent.headers["authorization"], "Bearer tenant-token")
+        self.assertEqual(user.status, "active")
+        self.assertIsNone(user.external_id)
+
+    def test_a_rejected_tenant_token_is_refreshed_once(self) -> None:
+        client, transport = self.build_client(
+            {
+                ("POST", "/v1/tenant/auth/token"): [
+                    httpx.Response(200, json=_TENANT_TOKEN)
+                ],
+                ("PATCH", self._PATH): [
+                    httpx.Response(
+                        401, json={"code": "INVALID_TOKEN", "message": "Revoked."}
+                    ),
+                    httpx.Response(
+                        200, json={"data": {"user": {**_USER, "status": "active"}}}
+                    ),
+                ],
+            }
+        )
+
+        user = client.update_user_status(
+            user_uuid=_USER_UUID, status="active", **_TENANT_CREDENTIAL
+        )
+
+        self.assertEqual(len(transport.sent("POST", "/v1/tenant/auth/token")), 2)
+        self.assertEqual(len(transport.sent("PATCH", self._PATH)), 2)
+        self.assertEqual(user.status, "active")
+
+
+if __name__ == "__main__":
+    unittest.main()

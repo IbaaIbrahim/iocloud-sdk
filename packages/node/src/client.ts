@@ -11,18 +11,18 @@ import type {
   CreateIdentityProviderInput,
   CreateTenantInput,
   CreateTopupPackageInput,
-  ExternalTenantMapping,
+  CreateUserInput,
   FederatedLoginInput,
   FederatedSession,
   GrantTenantTopupInput,
   IdentityProvider,
   IssueTenantTokenInput,
   JsonWebKeySet,
-  MapExternalTenantInput,
   PartnerToken,
   PlanSubscription,
   ProvisionedBalance,
   ProvisionedTopup,
+  SetTenantExternalIdInput,
   SetUserPersonaInput,
   SubjectTokenClaimNames,
   SubscribeTenantInput,
@@ -36,6 +36,8 @@ import type {
   TopupPackagePlan,
   TopupPurchase,
   UpdateTopupPackageInput,
+  UpdateUserStatusInput,
+  User,
 } from "./models.js";
 
 type JsonObject = Record<string, unknown>;
@@ -110,26 +112,46 @@ export class IOCloudClient {
     return this.#partnerToken;
   }
 
+  /**
+   * Create a tenant (space) inside an application owned by the partner.
+   *
+   * `externalId` is your own id for the organisation — the value your subject
+   * tokens carry in the tenant claim — and must be unique within the
+   * application. Omit it for a tenant nobody logs into yet and set it later
+   * with {@link setTenantExternalId}.
+   */
   async createTenant(input: CreateTenantInput): Promise<Tenant> {
+    const payload: JsonObject = {
+      name: input.name,
+      slug: input.slug,
+      contact_email: input.contactEmail,
+    };
+    const externalId = input.externalId ?? null;
+    if (externalId !== null) payload.external_id = externalId;
     const data = await this.partnerRequest(
       "POST",
       `/v1/partner/applications/${input.applicationUuid}/tenants`,
-      {
-        name: input.name,
-        slug: input.slug,
-        contact_email: input.contactEmail,
-      },
+      payload,
     );
-    const tenant = record(data.tenant);
-    return {
-      uuid: string(tenant.uuid),
-      applicationUuid: string(tenant.application_uuid),
-      name: string(tenant.name),
-      slug: string(tenant.slug),
-      contactEmail: string(tenant.contact_email),
-      status: string(tenant.status),
-      createdAt: new Date(string(tenant.created_at)),
-    };
+    return parseTenant(record(data.tenant));
+  }
+
+  /**
+   * Set, change or clear the id your subject tokens carry for a tenant.
+   *
+   * A federated login resolves its tenant claim to the tenant of the identity
+   * provider's application whose `externalId` equals it, so this is what makes
+   * a tenant reachable. The id is unique within the application, and every
+   * provider of that application must sign the same one. `externalId: null`
+   * clears it, which stops federated logins into the tenant.
+   */
+  async setTenantExternalId(input: SetTenantExternalIdInput): Promise<Tenant> {
+    const data = await this.partnerRequest(
+      "PATCH",
+      `/v1/partner/tenants/${input.tenantUuid}/external-id`,
+      { external_id: input.externalId },
+    );
+    return parseTenant(record(data.tenant));
   }
 
   /** List the tenant plans this partner offers. */
@@ -325,6 +347,11 @@ export class IOCloudClient {
   /**
    * Register the partner's own issuer as a trusted identity provider.
    *
+   * `applicationUuid` names the application the provider belongs to: a token it
+   * signs logs users into that application's tenants only. An application may
+   * have several providers, and any of them logs in any of its users, so they
+   * must all sign the same tenant and user ids.
+   *
    * `jwksUrl` defaults to `<issuer>/.well-known/jwks.json`, the path the SDK's
    * JWKS document is meant to be served from. Pass the same `claimNames` as the
    * {@link SubjectTokenIssuer} that signs the tokens, so the two configurations
@@ -339,6 +366,7 @@ export class IOCloudClient {
       "POST",
       "/v1/partner/federation/providers",
       {
+        application_uuid: input.applicationUuid,
         name: input.name,
         issuer,
         jwks_url: input.jwksUrl ?? `${issuer}/.well-known/jwks.json`,
@@ -366,24 +394,6 @@ export class IOCloudClient {
     return array(data.providers).map((provider) =>
       parseIdentityProvider(record(provider)),
     );
-  }
-
-  async mapExternalTenant(input: MapExternalTenantInput): Promise<ExternalTenantMapping> {
-    const path = `/v1/partner/federation/providers/${input.providerUuid}/tenants`;
-    const payload = {
-      tenant_uuid: input.tenantUuid,
-      external_tenant_id: input.externalTenantId,
-    };
-    const data = input.accessToken
-      ? await this.request("POST", path, payload, input.accessToken)
-      : await this.partnerRequest("POST", path, payload);
-    const mapping = record(data.mapping);
-    return {
-      identityProviderUuid: string(mapping.identity_provider_uuid),
-      tenantUuid: string(mapping.tenant_uuid),
-      externalTenantId: string(mapping.external_tenant_id),
-      createdAt: new Date(string(mapping.created_at)),
-    };
   }
 
   /**
@@ -531,6 +541,47 @@ export class IOCloudClient {
     }
   }
 
+  /**
+   * Create a user inside the tenant a tenant credential belongs to.
+   *
+   * `externalId` is your own id for the person — the value your subject tokens
+   * carry in the user claim (`sub` by default) — and is how a federated login
+   * finds the user within the token's tenant. Pre-create users this way when
+   * the identity provider does not provision them just in time
+   * (`allowJitUsers: false`).
+   *
+   * The route is tenant-scoped, so the call authenticates with the credential
+   * from {@link createTenantCredentials}, refreshing the tenant token once on a
+   * 401. The user starts `pending`: activate it with {@link updateUserStatus}
+   * before it can log in.
+   */
+  async createUser(input: CreateUserInput): Promise<User> {
+    const payload: JsonObject = { name: input.name, email: input.email };
+    const externalId = input.externalId ?? null;
+    if (externalId !== null) payload.external_id = externalId;
+    const data = await this.tenantRequest("POST", "/v1/tenant/users", payload, {
+      clientId: input.tenantClientId,
+      clientSecret: input.tenantClientSecret,
+    });
+    return parseUser(record(data.user));
+  }
+
+  /**
+   * Activate (`"active"`) or deactivate (`"deactivated"`) a user.
+   *
+   * Tenant-scoped like {@link createUser}, and authenticated the same way. A
+   * pending user cannot log in until this activates it.
+   */
+  async updateUserStatus(input: UpdateUserStatusInput): Promise<User> {
+    const data = await this.tenantRequest(
+      "PATCH",
+      `/v1/tenant/users/${input.userUuid}/status`,
+      { status: input.status },
+      { clientId: input.tenantClientId, clientSecret: input.tenantClientSecret },
+    );
+    return parseUser(record(data.user));
+  }
+
   private async partnerRequest(
     method: string,
     path: string,
@@ -542,6 +593,26 @@ export class IOCloudClient {
     } catch (error) {
       if (!(error instanceof IOCloudAuthenticationError)) throw error;
       token = await this.issuePartnerToken(true);
+      return this.request(method, path, payload, token.accessToken);
+    }
+  }
+
+  /**
+   * The tenant-token twin of {@link partnerRequest}: issues (or reuses) the
+   * credential's tenant token and refreshes it once on a 401.
+   */
+  private async tenantRequest(
+    method: string,
+    path: string,
+    payload: JsonObject,
+    credential: { clientId: string; clientSecret: string },
+  ): Promise<JsonObject> {
+    let token = await this.issueTenantToken(credential);
+    try {
+      return await this.request(method, path, payload, token.accessToken);
+    } catch (error) {
+      if (!(error instanceof IOCloudAuthenticationError)) throw error;
+      token = await this.issueTenantToken({ ...credential, forceRefresh: true });
       return this.request(method, path, payload, token.accessToken);
     }
   }
@@ -586,6 +657,31 @@ function parseToken(payload: JsonObject): PartnerToken {
     accessToken: string(payload.access_token),
     tokenType: string(payload.token_type),
     expiresAt: new Date(string(payload.expires_at)),
+  };
+}
+
+function parseTenant(payload: JsonObject): Tenant {
+  return {
+    uuid: string(payload.uuid),
+    applicationUuid: string(payload.application_uuid),
+    name: string(payload.name),
+    slug: string(payload.slug),
+    contactEmail: string(payload.contact_email),
+    externalId: nullableString(payload.external_id),
+    status: string(payload.status),
+    createdAt: new Date(string(payload.created_at)),
+  };
+}
+
+function parseUser(payload: JsonObject): User {
+  return {
+    uuid: string(payload.uuid),
+    tenantUuid: string(payload.tenant_uuid),
+    name: string(payload.name),
+    email: string(payload.email),
+    externalId: nullableString(payload.external_id),
+    status: string(payload.status),
+    createdAt: new Date(string(payload.created_at)),
   };
 }
 
@@ -715,6 +811,7 @@ function parseTenantSubscription(payload: JsonObject): TenantSubscription {
 function parseIdentityProvider(payload: JsonObject): IdentityProvider {
   return {
     uuid: string(payload.uuid),
+    applicationUuid: string(payload.application_uuid),
     name: string(payload.name),
     issuer: string(payload.issuer),
     jwksUrl: string(payload.jwks_url),
@@ -790,6 +887,11 @@ function string(value: unknown): string {
     throw new TypeError("IOCloud API returned an unexpected response shape");
   }
   return value;
+}
+
+/** A nullable string field: `null` when the response sends null or omits it. */
+function nullableString(value: unknown): string | null {
+  return value === null || value === undefined ? null : string(value);
 }
 
 function integer(value: unknown): number {

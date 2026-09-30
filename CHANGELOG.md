@@ -3,6 +3,57 @@
 All notable SDK changes are documented here. Each ecosystem can be released
 independently, so entries identify the affected packages.
 
+## 0.5.0 - 2026-09-30
+
+A clean break for all three packages, made for a platform that ties every
+identity provider to one of the partner's applications. SDK 0.4.0's
+`createIdentityProvider` and `mapExternalTenant` stop working against it.
+
+### Breaking
+
+- `createIdentityProvider` takes a required `applicationUuid`, now its first
+  parameter, and `IdentityProvider` carries it back. Every identity provider
+  belongs to one of your applications, and a token it signs logs users into
+  that application only. The platform answers `APPLICATION_NOT_FOUND` (404)
+  for an application that does not exist or is not yours.
+- `mapExternalTenant` and `ExternalTenantMapping` are removed, with the route
+  behind them. The id your tokens carry in the tenant claim is now a column of
+  the tenant itself, unique within its application: pass it as `externalId`
+  to `createTenant`, or set, change, and clear it with `setTenantExternalId`.
+- The platform no longer links users per provider. A user's external id — the
+  id your tokens carry as `sub`, or your configured user claim — is unique
+  within its tenant. The exchange resolves the token's tenant within the
+  provider's application, then the user within that tenant, never by email.
+- With the ids on the rows they identify, an application may now have several
+  providers, and replacing an issuer loses no tenant and no user. The price is
+  that every provider of one application must use the same tenant and user
+  ids, because any of them logs in any of that application's users.
+- `examples/laravel-demo`: `demo:federation:register` registers the provider
+  for `--application=` (or `DEMO_IOCLOUD_APPLICATION_UUID`), refuses to
+  register one without it, and sets the tenant's external id instead of
+  mapping it.
+
+### Added
+
+- `setTenantExternalId(tenantUuid, externalId)` sets or changes the id a
+  tenant is reached by; `null` clears it, which stops federated logins into
+  that tenant. An id another tenant of the application holds is refused with
+  `TENANT_EXTERNAL_ID_TAKEN` (409). `Tenant` gains `externalId`, null when
+  none is set.
+- `createTenant` takes an optional trailing `externalId`, so a tenant can be
+  created ready to federate in one call.
+- Added `createUser` and `updateUserStatus` to all three packages, with a
+  typed `User` model. They are what makes federation with just-in-time
+  provisioning off usable: pre-create each user with `externalId` set to the
+  `sub` your tokens will carry, then activate it. A pre-created user starts
+  `pending` and cannot log in until `updateUserStatus` makes it `active`.
+- Both user calls are tenant-scoped: they authenticate with a tenant
+  credential from `createTenantCredentials` rather than the partner token,
+  and refresh the tenant token once on a `401`. An external id another user of
+  the tenant holds is refused with `USER_EXTERNAL_ID_TAKEN` (409).
+- Documented the new paths and payloads in `openapi/iocloud.yaml`, and removed
+  the mapping path and its schemas.
+
 ## 0.4.0 - 2026-08-17
 
 ### Shared — top-up packages and tenant top-ups

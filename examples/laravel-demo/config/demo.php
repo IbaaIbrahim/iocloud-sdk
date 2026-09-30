@@ -9,7 +9,8 @@ return [
     | Stands in for the partner's own user table. `subject` is the value written
     | into the token's user claim: it must be stable and never reused, because
     | IOCloud keys the platform account off it. `external_tenant_id` is the
-    | partner's own organisation id, which must be mapped to an IOCloud tenant.
+    | partner's own organisation id, which an IOCloud tenant of the provider's
+    | application must carry as its external id.
     |
     */
     'users' => [
@@ -50,6 +51,11 @@ return [
     'require_email_verified' => (bool) env('DEMO_REQUIRE_EMAIL_VERIFIED', true),
     'allow_jit_users' => (bool) env('DEMO_ALLOW_JIT_USERS', true),
 
-    // The IOCloud tenant that DEMO_EXTERNAL_TENANT_ID is mapped onto.
+    // The IOCloud application the identity provider belongs to: a token it signs
+    // logs users into that application's tenants only.
+    'iocloud_application_uuid' => env('DEMO_IOCLOUD_APPLICATION_UUID'),
+
+    // The IOCloud tenant (one of that application's) whose external id is set
+    // to DEMO_EXTERNAL_TENANT_ID.
     'iocloud_tenant_uuid' => env('DEMO_IOCLOUD_TENANT_UUID'),
 ];

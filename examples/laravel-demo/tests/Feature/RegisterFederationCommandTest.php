@@ -7,14 +7,18 @@ use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
- * The one-time setup path: the portal tells IOCloud which issuer to trust, and
- * which of its organisations maps onto which IOCloud tenant.
+ * The one-time setup path: the portal tells IOCloud which issuer to trust for
+ * which application, and which IOCloud tenant carries its organisation id.
  */
 final class RegisterFederationCommandTest extends TestCase
 {
     private const PARTNER_TOKEN_ENDPOINT = 'api.iocloud.test/v1/partner/auth/token';
 
     private const PROVIDERS_ENDPOINT = 'api.iocloud.test/v1/partner/federation/providers';
+
+    private const TENANTS_ENDPOINT = 'api.iocloud.test/v1/partner/tenants';
+
+    private const APPLICATION_UUID = '5f0c1d2e-3a4b-4c5d-8e6f-7a8b9c0d1e2f';
 
     private const TENANT_UUID = 'ab8c1f2e-3d45-4a67-8b90-1c2d3e4f5a6b';
 
@@ -34,7 +38,8 @@ final class RegisterFederationCommandTest extends TestCase
             }
             $body = $request->data();
 
-            return $body['issuer'] === self::ISSUER
+            return $body['application_uuid'] === self::APPLICATION_UUID
+                && $body['issuer'] === self::ISSUER
                 && $body['jwks_url'] === self::ISSUER.'/.well-known/jwks.json'
                 && $body['allowed_audiences'] === [self::AUDIENCE]
                 && $body['allowed_algorithms'] === ['RS256']
@@ -45,22 +50,47 @@ final class RegisterFederationCommandTest extends TestCase
         });
     }
 
-    public function test_it_maps_the_portal_organisation_onto_an_iocloud_tenant(): void
+    public function test_the_application_option_overrides_the_configured_one(): void
+    {
+        $this->fakeIOCloud(existingProviders: []);
+        $otherApplication = '0e1f2a3b-4c5d-4e6f-9a0b-1c2d3e4f5a6b';
+
+        $this->artisan('demo:federation:register', [
+            '--application' => $otherApplication,
+            '--tenant' => self::TENANT_UUID,
+        ])->assertSuccessful();
+
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'POST'
+            && str_ends_with($request->url(), '/v1/partner/federation/providers')
+            && $request->data()['application_uuid'] === $otherApplication);
+    }
+
+    public function test_it_refuses_to_register_without_an_application(): void
+    {
+        $this->fakeIOCloud(existingProviders: []);
+        config(['demo.iocloud_application_uuid' => null]);
+
+        $this->artisan('demo:federation:register', ['--tenant' => self::TENANT_UUID])
+            ->expectsOutputToContain('DEMO_IOCLOUD_APPLICATION_UUID')
+            ->assertFailed();
+
+        Http::assertNotSent(fn (Request $request): bool =>
+            $request->method() === 'POST'
+            && str_ends_with($request->url(), '/v1/partner/federation/providers'));
+        Http::assertNotSent(fn (Request $request): bool =>
+            str_contains($request->url(), '/v1/partner/tenants/'));
+    }
+
+    public function test_it_sets_the_portal_organisation_as_the_tenants_external_id(): void
     {
         $this->fakeIOCloud(existingProviders: []);
 
         $this->artisan('demo:federation:register', ['--tenant' => self::TENANT_UUID])
             ->assertSuccessful();
 
-        Http::assertSent(function (Request $request): bool {
-            if (! str_contains($request->url(), '/providers/'.self::PROVIDER_UUID.'/tenants')) {
-                return false;
-            }
-            $body = $request->data();
-
-            return $body['tenant_uuid'] === self::TENANT_UUID
-                && $body['external_tenant_id'] === 'acme-tenant-1';
-        });
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'PATCH'
+            && str_ends_with($request->url(), '/v1/partner/tenants/'.self::TENANT_UUID.'/external-id')
+            && $request->data() === ['external_id' => 'acme-tenant-1']);
     }
 
     public function test_it_reuses_an_already_registered_issuer(): void
@@ -77,7 +107,21 @@ final class RegisterFederationCommandTest extends TestCase
             && str_ends_with($request->url(), '/v1/partner/federation/providers'));
     }
 
-    public function test_it_warns_instead_of_mapping_when_no_tenant_is_given(): void
+    public function test_a_registered_issuer_needs_no_application_to_set_the_tenant(): void
+    {
+        // The provider already belongs to its application; only registering
+        // one needs it.
+        $this->fakeIOCloud(existingProviders: [$this->providerBody()]);
+        config(['demo.iocloud_application_uuid' => null]);
+
+        $this->artisan('demo:federation:register', ['--tenant' => self::TENANT_UUID])
+            ->assertSuccessful();
+
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'PATCH'
+            && str_ends_with($request->url(), '/tenants/'.self::TENANT_UUID.'/external-id'));
+    }
+
+    public function test_it_warns_instead_of_setting_an_external_id_when_no_tenant_is_given(): void
     {
         $this->fakeIOCloud(existingProviders: []);
         config(['demo.iocloud_tenant_uuid' => null]);
@@ -126,14 +170,17 @@ final class RegisterFederationCommandTest extends TestCase
                     ],
                 ],
             ]),
-            self::PROVIDERS_ENDPOINT.'/*' => Http::response(
-                ['data' => ['mapping' => [
-                    'identity_provider_uuid' => self::PROVIDER_UUID,
-                    'tenant_uuid' => self::TENANT_UUID,
-                    'external_tenant_id' => 'acme-tenant-1',
+            self::TENANTS_ENDPOINT.'/*' => Http::response(
+                ['data' => ['tenant' => [
+                    'uuid' => self::TENANT_UUID,
+                    'application_uuid' => self::APPLICATION_UUID,
+                    'name' => 'Acme',
+                    'slug' => 'acme',
+                    'contact_email' => 'ops@acme.example',
+                    'external_id' => 'acme-tenant-1',
+                    'status' => 'active',
                     'created_at' => '2026-07-09T10:15:00Z',
                 ]]],
-                201,
             ),
             self::PROVIDERS_ENDPOINT => Http::sequence()
                 ->push(['data' => ['providers' => $existingProviders]])
@@ -146,6 +193,7 @@ final class RegisterFederationCommandTest extends TestCase
     {
         return [
             'uuid' => self::PROVIDER_UUID,
+            'application_uuid' => self::APPLICATION_UUID,
             'name' => 'Acme Portal (demo)',
             'issuer' => self::ISSUER,
             'jwks_url' => self::ISSUER.'/.well-known/jwks.json',

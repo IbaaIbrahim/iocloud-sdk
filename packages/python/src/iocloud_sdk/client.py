@@ -11,7 +11,6 @@ from .exceptions import (
     IOCloudTokenExchangeError,
 )
 from .models import (
-    ExternalTenantMapping,
     FederatedSession,
     IdentityProvider,
     PartnerToken,
@@ -25,6 +24,7 @@ from .models import (
     TenantTopup,
     TopupPackage,
     TopupPurchase,
+    User,
 )
 
 if TYPE_CHECKING:  # Signing needs the optional federation extra; keep it lazy.
@@ -116,16 +116,48 @@ class IOCloudClient:
         name: str,
         slug: str,
         contact_email: str,
+        external_id: str | None = None,
     ) -> Tenant:
-        """Create a tenant (space) inside an application owned by the partner."""
+        """Create a tenant (space) inside an application owned by the partner.
+
+        ``external_id`` is your own id for the organisation — the value your
+        subject tokens carry in the tenant claim — and must be unique within
+        the application. Omit it for a tenant nobody logs into yet and set it
+        later with :meth:`set_tenant_external_id`.
+        """
+        payload: dict[str, Any] = {
+            "name": name,
+            "slug": slug,
+            "contact_email": contact_email,
+        }
+        if external_id is not None:
+            payload["external_id"] = external_id
         data = self._partner_request(
             "POST",
             f"/v1/partner/applications/{application_uuid}/tenants",
-            json={
-                "name": name,
-                "slug": slug,
-                "contact_email": contact_email,
-            },
+            json=payload,
+        )
+        return Tenant.from_payload(data["tenant"])
+
+    def set_tenant_external_id(
+        self,
+        *,
+        tenant_uuid: UUID | str,
+        external_id: str | None,
+    ) -> Tenant:
+        """Set, change or clear the id your subject tokens carry for a tenant.
+
+        A federated login resolves its tenant claim to the tenant of the
+        identity provider's application whose ``external_id`` equals it, so
+        this is what makes a tenant reachable. The id is unique within the
+        application, and every provider of that application must sign the
+        same one. ``external_id=None`` clears it, which stops federated logins
+        into the tenant.
+        """
+        data = self._partner_request(
+            "PATCH",
+            f"/v1/partner/tenants/{tenant_uuid}/external-id",
+            json={"external_id": external_id},
         )
         return Tenant.from_payload(data["tenant"])
 
@@ -363,6 +395,7 @@ class IOCloudClient:
     def create_identity_provider(
         self,
         *,
+        application_uuid: UUID | str,
         name: str,
         issuer: str,
         jwks_url: str | None = None,
@@ -375,6 +408,11 @@ class IOCloudClient:
     ) -> IdentityProvider:
         """Register the partner's own issuer as a trusted identity provider.
 
+        ``application_uuid`` names the application the provider belongs to: a
+        token it signs logs users into that application's tenants only. An
+        application may have several providers, and any of them logs in any of
+        its users, so they must all sign the same tenant and user ids.
+
         ``jwks_url`` defaults to ``<issuer>/.well-known/jwks.json``, the path
         the SDK's JWKS document is meant to be served from. Pass the same
         ``claim_names`` as the :class:`~iocloud_sdk.SubjectTokenIssuer` that
@@ -386,6 +424,7 @@ class IOCloudClient:
             "POST",
             "/v1/partner/federation/providers",
             json={
+                "application_uuid": str(application_uuid),
                 "name": name,
                 "issuer": normalized_issuer,
                 "jwks_url": jwks_url
@@ -410,36 +449,6 @@ class IOCloudClient:
             IdentityProvider.from_payload(provider)
             for provider in data["providers"]
         ]
-
-    def map_external_tenant(
-        self,
-        *,
-        provider_uuid: UUID | str,
-        tenant_uuid: UUID | str,
-        external_tenant_id: str,
-        access_token: str | None = None,
-    ) -> ExternalTenantMapping:
-        """Map an external tenant id to an internal tenant.
-
-        By default the cached partner token is used. ``access_token`` may be a
-        tenant token instead; the API then permits mapping only that token's own
-        tenant.
-        """
-        path = f"/v1/partner/federation/providers/{provider_uuid}/tenants"
-        body = {
-            "tenant_uuid": str(tenant_uuid),
-            "external_tenant_id": external_tenant_id,
-        }
-        if access_token is not None:
-            data = self._request(
-                "POST",
-                path,
-                json=body,
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
-        else:
-            data = self._partner_request("POST", path, json=body)
-        return ExternalTenantMapping.from_payload(data["mapping"])
 
     def jwks(self) -> dict[str, list[dict[str, str]]]:
         """The public key set to publish at ``<issuer>/.well-known/jwks.json``.
@@ -597,6 +606,62 @@ class IOCloudClient:
                 headers={"Authorization": f"Bearer {token.access_token}"},
             )
 
+    def create_user(
+        self,
+        *,
+        name: str,
+        email: str,
+        tenant_client_id: str,
+        tenant_client_secret: str,
+        external_id: str | None = None,
+    ) -> User:
+        """Create a user inside the tenant a tenant credential belongs to.
+
+        ``external_id`` is your own id for the person — the value your subject
+        tokens carry in the user claim (``sub`` by default) — and is how a
+        federated login finds the user within the token's tenant. Pre-create
+        users this way when the identity provider does not provision them just
+        in time (``allow_jit_users=False``).
+
+        The route is tenant-scoped, so the call authenticates with the
+        credential from :meth:`create_tenant_credentials`, refreshing the
+        tenant token once on a 401. The user starts ``pending``: activate it
+        with :meth:`update_user_status` before it can log in.
+        """
+        payload: dict[str, Any] = {"name": name, "email": email}
+        if external_id is not None:
+            payload["external_id"] = external_id
+        data = self._tenant_request(
+            "POST",
+            "/v1/tenant/users",
+            json=payload,
+            tenant_client_id=tenant_client_id,
+            tenant_client_secret=tenant_client_secret,
+        )
+        return User.from_payload(data["user"])
+
+    def update_user_status(
+        self,
+        *,
+        user_uuid: UUID | str,
+        status: str,
+        tenant_client_id: str,
+        tenant_client_secret: str,
+    ) -> User:
+        """Activate (``"active"``) or deactivate (``"deactivated"``) a user.
+
+        Tenant-scoped like :meth:`create_user`, and authenticated the same
+        way. A pending user cannot log in until this activates it.
+        """
+        data = self._tenant_request(
+            "PATCH",
+            f"/v1/tenant/users/{user_uuid}/status",
+            json={"status": status},
+            tenant_client_id=tenant_client_id,
+            tenant_client_secret=tenant_client_secret,
+        )
+        return User.from_payload(data["user"])
+
     def _require_token_issuer(self, called_method: str) -> "SubjectTokenIssuer":
         """The configured token issuer, or a message naming what to configure.
 
@@ -634,6 +699,43 @@ class IOCloudClient:
                 path,
                 json=json,
                 params=params,
+                headers={"Authorization": f"Bearer {token.access_token}"},
+            )
+
+    def _tenant_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: dict[str, Any],
+        tenant_client_id: str,
+        tenant_client_secret: str,
+    ) -> dict[str, Any]:
+        """The tenant-token twin of :meth:`_partner_request`.
+
+        Issues (or reuses) the tenant token for the credential and refreshes
+        it once when the request is rejected with a 401.
+        """
+        token = self.issue_tenant_token(
+            client_id=tenant_client_id, client_secret=tenant_client_secret
+        )
+        try:
+            return self._request(
+                method,
+                path,
+                json=json,
+                headers={"Authorization": f"Bearer {token.access_token}"},
+            )
+        except IOCloudAuthenticationError:
+            token = self.issue_tenant_token(
+                client_id=tenant_client_id,
+                client_secret=tenant_client_secret,
+                force_refresh=True,
+            )
+            return self._request(
+                method,
+                path,
+                json=json,
                 headers={"Authorization": f"Bearer {token.access_token}"},
             )
 

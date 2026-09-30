@@ -23,6 +23,7 @@ const tenant = await client.createTenant({
   name: "Acme workspace",
   slug: "acme",
   contactEmail: "ops@acme.example",
+  externalId: "acme-tenant-1", // optional: the tenant claim your tokens carry
 });
 ```
 
@@ -100,6 +101,7 @@ const client = new IOCloudClient({
 });
 
 const provider = await client.createIdentityProvider({
+  applicationUuid: "11111111-1111-1111-1111-111111111111",
   name: "Acme Portal",
   issuer: tokenIssuer.issuer,
   allowedAudiences: [tokenIssuer.audience],
@@ -109,14 +111,20 @@ const provider = await client.createIdentityProvider({
   claimNames: tokenIssuer.claimNames,
 });
 
-// Point one of your organisation ids at an IOCloud tenant. Without this, logins
-// fail with `invalid_target`.
-await client.mapExternalTenant({
-  providerUuid: provider.uuid,
+// Give a tenant of that application the organisation id your tokens carry, or
+// pass `externalId` to createTenant. Without it, logins fail with
+// `invalid_target`; `externalId: null` clears it again.
+await client.setTenantExternalId({
   tenantUuid: tenant.uuid,
-  externalTenantId: "acme-tenant-1",
+  externalId: "acme-tenant-1",
 });
 ```
+
+The provider belongs to that application: a token it signs logs users into the
+application's tenants only. An application may have several providers, and any
+of them logs in any of its users, so they must all sign the same tenant and user
+ids. A tenant's `externalId` is unique within its application; one another
+tenant holds is refused with `TENANT_EXTERNAL_ID_TAKEN`.
 
 Passing the issuer's own `jwksUrl` and `claimNames` is what keeps the registration
 and the tokens you sign from drifting apart. `listIdentityProviders()` reads back
@@ -141,19 +149,59 @@ session.expiresAt;     // no refresh tokens; sign and exchange again
 One call signs the subject token and exchanges it. Use
 `exchangeSubjectToken(token)` if the token was signed elsewhere.
 
-`subject` is the identity key IOCloud stores. It must be stable across logins and
-never reused for a different person — an email change at your end must not
-change it.
+`subject` is the identity key IOCloud stores — the user's `externalId` within
+its tenant. It must be stable across logins and never reused for a different
+person — an email change at your end must not change it.
 
 A rejected exchange throws `IOCloudTokenExchangeError` with the RFC 6749 body:
 
 | `error` | Cause |
 | --- | --- |
-| `invalid_grant` | Unknown or disabled issuer, signature does not verify against the published JWKS, wrong audience, token expired or replayed, missing claims, unverified email where required, or an unknown subject with JIT provisioning off. |
-| `invalid_target` | The tenant claim is not mapped to an IOCloud tenant, or the mapped tenant is not active. |
+| `invalid_grant` | Unknown or disabled issuer, signature does not verify against the published JWKS, wrong audience, token expired or replayed, missing claims, unverified email where required, a subject no user of the tenant has as its `externalId` with JIT provisioning off, or a user that is not active — a pre-created user is `pending` until activated. |
+| `invalid_target` | No tenant of the provider's application has the tenant claim as its `externalId`, or that tenant is not active. |
 
 `IOCloudFederationError` signals local misconfiguration — an unreadable PEM, a
 missing token issuer — before any request is made.
+
+### Federation with just-in-time provisioning off
+
+With `allowJitUsers: false`, a login reaches only a user that already exists.
+Create each one with the `sub` your tokens will carry as its `externalId`, then
+activate it — a user created this way starts `pending`. The user endpoints are
+tenant-scoped, so these calls take a tenant credential instead of the partner
+token, and refresh the tenant token once on a `401`:
+
+```ts
+// The secret is returned once, at creation: persist it for later user calls.
+const credential = await client.createTenantCredentials(tenant.uuid);
+const tenantCredential = {
+  tenantClientId: credential.clientId,
+  tenantClientSecret: credential.clientSecret,
+};
+
+const user = await client.createUser({
+  name: "Dana Okafor",
+  email: "dana.okafor@acme.example",
+  externalId: "acme-user-1001", // the `sub` your tokens carry
+  ...tenantCredential,
+});
+user.status; // "pending"
+
+await client.updateUserStatus({
+  userUuid: user.uuid,
+  status: "active",
+  ...tenantCredential,
+});
+
+await client.federatedLogin({
+  subject: "acme-user-1001",
+  externalTenantId: "acme-tenant-1",
+});
+```
+
+An `externalId` another user of the tenant already holds is refused with
+`USER_EXTERNAL_ID_TAKEN`. `status: "deactivated"` stops a user's logins without
+deleting it.
 
 ### Rotating keys
 

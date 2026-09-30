@@ -40,6 +40,7 @@ abstract class TestCase extends BaseTestCase
             'iocloud.federation.audience' => self::AUDIENCE,
             'iocloud.federation.private_key' => $this->signingKey->privateKeyPem(),
             'iocloud.federation.private_key_path' => null,
+            'demo.iocloud_application_uuid' => '5f0c1d2e-3a4b-4c5d-8e6f-7a8b9c0d1e2f',
             'demo.iocloud_tenant_uuid' => 'ab8c1f2e-3d45-4a67-8b90-1c2d3e4f5a6b',
         ]);
     }
