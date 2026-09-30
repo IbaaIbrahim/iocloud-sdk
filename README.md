@@ -36,7 +36,8 @@ All clients implement:
 - top-up packages: author the credit bundles you sell your tenants, scope them
   to particular tenant plans, and grant them (see below);
 - federation: RSA keypair generation, the JWKS document, subject-token signing,
-  identity-provider registration, and the RFC 8693 token exchange;
+  identity-provider registration, and the RFC 8693 token exchange, including
+  tenants created at their first login (see below);
 - typed responses and consistent API/authentication exceptions.
 
 ## Putting a tenant on a plan
@@ -169,6 +170,7 @@ publish the public half   signing key -> jwks() at <issuer>/.well-known/jwks.jso
                           (the Laravel package serves this route for you)
 register the issuer once   createIdentityProvider(applicationUuid, …)
 name each tenant           createTenant(…, externalId) or setTenantExternalId()
+                           (or let its first login create it: see below)
 per login                  federatedLogin(subject, externalTenantId, …)
                               -> signs a short-lived JWT with the private key
                               -> exchanges it for an opaque platform session
@@ -210,8 +212,7 @@ provider = client.create_identity_provider(
 tenant = client.create_tenant(
     application_uuid=application_uuid,
     name="Acme Ltd",
-    slug="acme",
-    contact_email="ops@acme.example",
+    contact_email="ops@acme.example",     # optional
     external_id="acme-tenant-1",          # what your tokens carry as tenant_id
 )
 # The secret is returned once, at creation: persist it for later user calls.
@@ -236,8 +237,58 @@ session = client.federated_login(
 )
 ```
 
+The platform generates each tenant's slug from its name and returns it on the
+tenant (`tenant.slug`, as in `acme-ltd-5d3c1a7e`), so `create_tenant` takes none.
+
 The Node and Laravel packages expose the same calls (`createUser`,
 `updateUserStatus`, `setTenantExternalId`, and `externalId` on `createTenant`).
+
+### Creating a tenant at its first login
+
+Instead of creating each tenant before anyone logs into it, register the
+provider with `allow_jit_tenants` and pass the tenant's details to each login
+as a `TenantProfile` — the name and optional contact email `create_tenant` takes.
+The SDK signs them into the subject token as its `tenant_profile` claim. When
+no tenant of the provider's application has the token's tenant claim as its
+external id, the platform creates that tenant, active, with the claim as its
+external id, then creates the user just in time:
+
+```python
+from iocloud_sdk import TenantProfile
+
+client.create_identity_provider(
+    application_uuid=application_uuid,
+    name="Acme Portal",
+    issuer=token_issuer.issuer,
+    allowed_audiences=[token_issuer.audience],
+    allow_jit_users=True,                 # allow_jit_tenants requires it
+    allow_jit_tenants=True,
+    claim_names=token_issuer.claim_names,
+)
+
+session = client.federated_login(
+    subject="acme-user-1001",
+    external_tenant_id="acme-tenant-1",   # the new tenant's external id
+    email="dana.okafor@acme.example",     # its user is created just in time
+    tenant=TenantProfile(name="Acme Ltd", contact_email="ops@acme.example"),
+)
+if session.tenant_created:
+    # A new tenant has no plan, so it draws on your credits uncapped.
+    client.subscribe_tenant(tenant_uuid=session.tenant_uuid, plan_uuid=plan.uuid)
+```
+
+- `allow_jit_tenants` requires `allow_jit_users`, because the users of a tenant
+  created at login can only be created at login: the platform refuses one
+  without the other with a `422`.
+- The profile creates a tenant and never updates one. Once the tenant exists
+  the profile is ignored, so passing it on every login is harmless.
+- `session.tenant_uuid` is the tenant the session belongs to, and
+  `session.tenant_created` is true only for the login that created it. A
+  platform that predates them sends neither: `None` and `False`.
+
+The Node and Laravel packages expose the same: `TenantProfile`, `tenant` on
+`federatedLogin`, `allowJitTenants` on `createIdentityProvider`, and
+`tenantUuid` / `tenantCreated` on `FederatedSession`.
 
 ## Local checks
 
@@ -290,16 +341,16 @@ missing trusted publisher or a wrong environment name surfaces.
 
 | Package               | Published on the registry | Setup state                                            |
 | --------------------- | ------------------------- | ------------------------------------------------------ |
-| `iocloud/laravel-sdk` | v0.3.0, v0.4.0            | confirmed: `LARAVEL_SPLIT_TOKEN` + Packagist hook work  |
+| `iocloud/laravel-sdk` | v0.3.0, v0.4.0, v0.5.0    | confirmed: `LARAVEL_SPLIT_TOKEN` + Packagist hook work  |
 | `iocloud-sdk` (PyPI)  | never                     | unverified: needs the trusted publisher + `pypi` env    |
 | `@iocloud/sdk` (npm)  | never                     | unverified: needs `NPM_TOKEN` + `npm` env               |
 
-The three do not share a version counter. Laravel is published through 0.4.0, so
-its next release is 0.5.0. Python and npm were never tagged at 0.4.0, and their
-manifests now read 0.5.0 as well, so `python-v0.5.0` and `node-v0.5.0` are their
-next tags; a 0.4.0 of either could now only be cut from a commit before that
-bump. The snippets below write `0.5.0` throughout — substitute the version that
-package is actually going to.
+The three do not share a version counter. Laravel is published through 0.5.0, so
+its next release is 0.6.0. Python and npm were never tagged at 0.4.0 or 0.5.0,
+and their manifests now read 0.6.0, so `python-v0.6.0` and `node-v0.6.0` are
+their next tags; an earlier version of either could now only be cut from a
+commit before that bump. The snippets below write `0.6.0` throughout —
+substitute the version that package is actually going to.
 
 ### Releasing the Laravel package
 
@@ -314,12 +365,12 @@ git switch main && git pull
 cd packages/laravel && composer validate --strict && composer install && composer test && cd ../..
 
 # 3. Tag that commit and push the tag.
-git tag laravel-v0.5.0
-git push origin laravel-v0.5.0
+git tag laravel-v0.6.0
+git push origin laravel-v0.6.0
 ```
 
 The workflow then re-runs the package tests, `git subtree split --prefix=packages/laravel`
-into `IbaaIbrahim/iocloud-laravel-sdk`, and pushes a bare `v0.5.0` tag there;
+into `IbaaIbrahim/iocloud-laravel-sdk`, and pushes a bare `v0.6.0` tag there;
 Packagist's GitHub hook indexes it within a minute or two. The split is needed
 because Packagist expects `composer.json` at the repository root.
 
@@ -335,12 +386,12 @@ curl -s https://repo.packagist.org/p2/iocloud/laravel-sdk.json \
 ### Releasing the Python package
 
 `pyproject.toml` carries the version and the workflow never compares it with the
-tag, so the **manifest** decides what is published: a `python-v0.5.0` tag on a
-manifest still reading 0.4.0 re-publishes 0.4.0, which PyPI then rejects as a
+tag, so the **manifest** decides what is published: a `python-v0.6.0` tag on a
+manifest still reading 0.5.0 re-publishes 0.5.0, which PyPI then rejects as a
 duplicate.
 
 ```bash
-# 1. Bump packages/python/pyproject.toml -> version = "0.5.0", and commit it.
+# 1. Bump packages/python/pyproject.toml -> version = "0.6.0", and commit it.
 
 # 2. Run the suite yourself. publish-python.yml has no test step — it builds and
 #    uploads — so nothing else gates this release.
@@ -348,7 +399,7 @@ python -m unittest discover -s packages/python/tests   # after the editable inst
 
 # 3. Tag the commit you just tested and push.
 git push origin main
-git tag python-v0.5.0 && git push origin python-v0.5.0
+git tag python-v0.6.0 && git push origin python-v0.6.0
 ```
 
 `publish-python.yml` builds an sdist and a wheel, then uploads with
@@ -363,11 +414,11 @@ sat at 0.2.0 through two manifest bumps before anyone noticed.
 
 ```bash
 cd packages/node
-npm version 0.5.0 --no-git-tag-version    # package.json AND package-lock.json
+npm version 0.6.0 --no-git-tag-version    # package.json AND package-lock.json
 npm test                                  # builds first, then runs the listed suites
 cd ../..
-git commit -am "chore: release node 0.5.0" && git push origin main
-git tag node-v0.5.0 && git push origin node-v0.5.0
+git commit -am "chore: release node 0.6.0" && git push origin main
+git tag node-v0.6.0 && git push origin node-v0.6.0
 ```
 
 `publish-node.yml` has no test step either, but `npm publish` triggers the

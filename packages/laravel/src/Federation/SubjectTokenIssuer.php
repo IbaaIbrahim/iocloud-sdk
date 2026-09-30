@@ -3,6 +3,7 @@
 namespace IOCloud\Laravel\Federation;
 
 use IOCloud\Laravel\Data\SubjectTokenClaimNames;
+use IOCloud\Laravel\Data\TenantProfile;
 use IOCloud\Laravel\Exceptions\IOCloudFederationException;
 
 /** Mints the short-lived OIDC JWTs a partner exchanges for a platform session. */
@@ -11,8 +12,19 @@ final class SubjectTokenIssuer
     /** Subject tokens exist only to be exchanged once, right after login. */
     public const DEFAULT_TOKEN_TTL_SECONDS = 300;
 
-    /** Claims whose values the issuer alone decides. */
-    private const RESERVED_CLAIMS = ['iss', 'aud', 'iat', 'nbf', 'exp', 'jti'];
+    /**
+     * The tenant a first login may create. Its name is fixed: the claim mapping
+     * renames the identity values, never this claim.
+     */
+    private const TENANT_PROFILE_CLAIM = 'tenant_profile';
+
+    /**
+     * Claims whose values the issuer alone decides. The tenant profile is one of
+     * them: the typed `$tenant` argument of {@see issue()} is its only way in.
+     */
+    private const RESERVED_CLAIMS = [
+        'iss', 'aud', 'iat', 'nbf', 'exp', 'jti', self::TENANT_PROFILE_CLAIM,
+    ];
 
     /** 128 bits of randomness, which is what makes a `jti` collision-free. */
     private const TOKEN_ID_BYTES = 16;
@@ -86,6 +98,9 @@ final class SubjectTokenIssuer
      * identity key the platform stores, so reusing it for a different person
      * hands over that person's account.
      *
+     * `$tenant` describes the tenant to create if this is its first login, and
+     * is signed as the `tenant_profile` claim.
+     *
      * @param array<string, mixed> $extraClaims
      */
     public function issue(
@@ -95,12 +110,16 @@ final class SubjectTokenIssuer
         ?string $name = null,
         bool $emailVerified = false,
         array $extraClaims = [],
+        ?TenantProfile $tenant = null,
     ): string {
         if (trim($subject) === '') {
             throw new IOCloudFederationException('subject must not be empty');
         }
         if (trim($externalTenantId) === '') {
             throw new IOCloudFederationException('externalTenantId must not be empty');
+        }
+        if ($tenant !== null) {
+            $this->assertTenantProfileValues($tenant);
         }
 
         $claims = $this->standardClaims(
@@ -109,10 +128,12 @@ final class SubjectTokenIssuer
             $email,
             $name,
             $emailVerified,
+            $tenant,
         );
 
         // Reserved claims stay under the issuer's control: a caller cannot widen
-        // the audience or extend the lifetime through extra claims.
+        // the audience, extend the lifetime, or sign an unchecked tenant profile
+        // through extra claims.
         foreach ($extraClaims as $claimName => $claimValue) {
             if (in_array($claimName, self::RESERVED_CLAIMS, strict: true)) {
                 throw new IOCloudFederationException(
@@ -137,6 +158,22 @@ final class SubjectTokenIssuer
         );
     }
 
+    /**
+     * Refuse an empty profile value, the way an empty subject is refused.
+     *
+     * Only emptiness is checked, and the contact email only when one is given:
+     * lengths are the platform's to judge.
+     */
+    private function assertTenantProfileValues(TenantProfile $tenant): void
+    {
+        if (trim($tenant->name) === '') {
+            throw new IOCloudFederationException('tenant.name must not be empty');
+        }
+        if ($tenant->contactEmail !== null && trim($tenant->contactEmail) === '') {
+            throw new IOCloudFederationException('tenant.contactEmail must not be empty');
+        }
+    }
+
     /** @return array<string, mixed> */
     private function standardClaims(
         string $subject,
@@ -144,6 +181,7 @@ final class SubjectTokenIssuer
         ?string $email,
         ?string $name,
         bool $emailVerified,
+        ?TenantProfile $tenant,
     ): array {
         $issuedAt = time();
         $claims = [
@@ -164,6 +202,9 @@ final class SubjectTokenIssuer
         }
         if ($name !== null) {
             $claims[$this->claimNames->name] = $name;
+        }
+        if ($tenant !== null) {
+            $claims[self::TENANT_PROFILE_CLAIM] = $tenant->toClaim();
         }
 
         return $claims;

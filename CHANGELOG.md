@@ -3,6 +3,77 @@
 All notable SDK changes are documented here. Each ecosystem can be released
 independently, so entries identify the affected packages.
 
+## 0.6.0 - 2026-09-30
+
+Just-in-time tenants, and tenant slugs the platform generates, for all three
+packages. A partner no longer has to call `createTenant` in a separate flow
+before a new organisation's first login: the login carries the tenant's
+details, and the platform creates the tenant during the token exchange if it
+does not exist yet. `createTenant` loses its slug, and a tenant's contact email
+may now be null (see Breaking); every new parameter is optional.
+
+### Breaking
+
+- `createTenant` takes no slug. The platform generates one from the name —
+  transliterated to lowercase ASCII and hyphens, at most 91 characters cut at a
+  word boundary, or `tenant` when the name has no letters or digits — then a
+  hyphen and the first 8 hex characters of the tenant's uuid, as in
+  `acme-corp-5d3c1a7e`, and returns it on the tenant. It ignores a slug an
+  older client still sends. Python's keyword-only `create_tenant` raises
+  `TypeError` for `slug=`, and Node's `CreateTenantInput` has no `slug`:
+  TypeScript flags one, and a JavaScript caller's is not sent.
+- Laravel keeps `createTenant`'s third parameter as a deprecated
+  `?string $slug = null` that is never sent and throws
+  `InvalidArgumentException` when given a value. Deleting it would have
+  shifted a 0.5.0 positional call, `createTenant($app, $name, $slug, $email)`,
+  silently: its slug would have gone out as the contact email and its email
+  as the external id. With the slot, that call fails loudly instead. The slot
+  goes in 1.0.
+- A tenant's `contactEmail` may be null, in every tenant the platform returns,
+  so `Tenant.contactEmail` is nullable in all three packages.
+
+### Added
+
+- `createTenant`'s `contactEmail` is optional: omit it, or pass null, for a
+  tenant with none, and it is left out of the request.
+- `TenantProfile` (`name`, and an optional `contactEmail`): what `createTenant`
+  takes, less the two ids the login already carries. The tenant claim becomes
+  the new tenant's external id, the identity provider's application is its
+  application, and the platform generates its slug the same way.
+- `federatedLogin` and `SubjectTokenIssuer.issue` take an optional trailing
+  `tenant`, signed as the subject token's `tenant_profile` claim: the name,
+  plus `contact_email` when there is one. The claim's name is fixed, whatever
+  the claim-name mapping says, and `tenant_profile` joins the reserved claims,
+  so `extraClaims` can neither set nor override it: `tenant` is the only way
+  in. The issuer refuses an empty name, or an empty contact email when one is
+  given, before signing; lengths are the platform's to judge, and it answers a
+  malformed profile with `invalid_grant` when it needs it.
+- `createIdentityProvider` takes an optional `allowJitTenants` (default false),
+  and `IdentityProvider` carries it back. In Laravel it is the last parameter,
+  after `$claimNames`, so a call that passes the arguments positionally keeps
+  working; Python takes it by keyword and Node in its input object. With it
+  on, a login whose tenant claim names no tenant of the provider's application
+  creates that tenant, active, and then its user just in time.
+- `FederatedSession` gains `tenantUuid`, the tenant the session belongs to,
+  and `tenantCreated`, true only for the login that created it. A platform
+  that predates them sends neither, so they read as `null` and `false`, as
+  `allowJitTenants` reads as `false`.
+- Just-in-time tenants require just-in-time users: the users of a tenant
+  created at login can only be created at login, so the platform refuses
+  `allowJitTenants` without `allowJitUsers` with a `422`. For the same reason
+  the login needs an `email` claim, as every just-in-time login does.
+- The profile creates a tenant; it never updates one. Once the tenant exists
+  the platform ignores the profile, so a later login with different values
+  changes nothing.
+- In the rare case the platform cannot create the tenant, it refuses the login
+  with `invalid_target` ("The token's tenant could not be created."), surfaced
+  as the package's token-exchange error.
+- A tenant created at login has no plan, so it draws on your credits uncapped.
+  When `tenantCreated` is true, subscribe it with `subscribeTenant`.
+- Documented the provider flag, the `tenant_profile` claim, the two new
+  exchange members, the generated slug and the optional contact email in
+  `openapi/iocloud.yaml`.
+
 ## 0.5.0 - 2026-09-30
 
 A clean break for all three packages, made for a platform that ties every

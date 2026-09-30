@@ -115,17 +115,18 @@ export class IOCloudClient {
   /**
    * Create a tenant (space) inside an application owned by the partner.
    *
+   * The platform generates the tenant's slug from `name` and returns it as
+   * `slug` on the tenant. `contactEmail` is optional: omit it for none.
+   *
    * `externalId` is your own id for the organisation — the value your subject
    * tokens carry in the tenant claim — and must be unique within the
    * application. Omit it for a tenant nobody logs into yet and set it later
    * with {@link setTenantExternalId}.
    */
   async createTenant(input: CreateTenantInput): Promise<Tenant> {
-    const payload: JsonObject = {
-      name: input.name,
-      slug: input.slug,
-      contact_email: input.contactEmail,
-    };
+    const payload: JsonObject = { name: input.name };
+    const contactEmail = input.contactEmail ?? null;
+    if (contactEmail !== null) payload.contact_email = contactEmail;
     const externalId = input.externalId ?? null;
     if (externalId !== null) payload.external_id = externalId;
     const data = await this.partnerRequest(
@@ -356,6 +357,11 @@ export class IOCloudClient {
    * JWKS document is meant to be served from. Pass the same `claimNames` as the
    * {@link SubjectTokenIssuer} that signs the tokens, so the two configurations
    * cannot drift apart.
+   *
+   * `allowJitTenants` lets a login whose tenant claim names no tenant of the
+   * application create it, from the `tenant` passed to {@link federatedLogin}.
+   * It requires `allowJitUsers`, since that tenant's users can only be created
+   * at login: the platform answers 422 to one without the other.
    */
   async createIdentityProvider(
     input: CreateIdentityProviderInput,
@@ -380,6 +386,7 @@ export class IOCloudClient {
         email_claim: claimNames.email,
         name_claim: claimNames.name,
         allow_jit_users: input.allowJitUsers ?? false,
+        allow_jit_tenants: input.allowJitTenants ?? false,
       },
     );
     return parseIdentityProvider(record(data.provider));
@@ -465,6 +472,10 @@ export class IOCloudClient {
    *
    * The whole partner-side login integration, in one call. Requires
    * `tokenIssuer` on the client options.
+   *
+   * `tenant` is the tenant to create if this is its first login, on a provider
+   * that allows just-in-time tenants; the session's `tenantCreated` says
+   * whether this login created it.
    */
   async federatedLogin(input: FederatedLoginInput): Promise<FederatedSession> {
     return this.exchangeSubjectToken(
@@ -666,7 +677,7 @@ function parseTenant(payload: JsonObject): Tenant {
     applicationUuid: string(payload.application_uuid),
     name: string(payload.name),
     slug: string(payload.slug),
-    contactEmail: string(payload.contact_email),
+    contactEmail: nullableString(payload.contact_email),
     externalId: nullableString(payload.external_id),
     status: string(payload.status),
     createdAt: new Date(string(payload.created_at)),
@@ -826,6 +837,7 @@ function parseIdentityProvider(payload: JsonObject): IdentityProvider {
       name: string(payload.name_claim),
     },
     allowJitUsers: Boolean(payload.allow_jit_users),
+    allowJitTenants: Boolean(payload.allow_jit_tenants),
     status: string(payload.status),
     createdAt: new Date(string(payload.created_at)),
   };
@@ -844,6 +856,9 @@ function parseFederatedSession(payload: JsonObject): FederatedSession {
     userUuid: string(payload.user_uuid),
     name: string(payload.name),
     email: string(payload.email),
+    // Both absent from a platform that predates just-in-time tenants.
+    tenantUuid: nullableString(payload.tenant_uuid),
+    tenantCreated: Boolean(payload.tenant_created),
   };
 }
 

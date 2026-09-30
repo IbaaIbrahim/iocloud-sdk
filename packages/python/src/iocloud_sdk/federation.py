@@ -18,7 +18,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from .exceptions import IOCloudFederationError
-from .models import SubjectTokenClaimNames
+from .models import SubjectTokenClaimNames, TenantProfile
 
 try:
     import jwt
@@ -42,8 +42,15 @@ _RSA_KEY_SIZE_BITS = 2048
 # Subject tokens exist only to be exchanged once, immediately after login.
 DEFAULT_TOKEN_TTL_SECONDS = 300
 
-# Claims whose values the issuer alone decides.
-_RESERVED_CLAIMS = frozenset({"iss", "aud", "iat", "nbf", "exp", "jti"})
+# The tenant a first login may create. Its name is fixed: the claim mapping
+# renames the identity values, never this claim.
+_TENANT_PROFILE_CLAIM = "tenant_profile"
+
+# Claims whose values the issuer alone decides. The tenant profile is one of
+# them: the typed ``tenant`` argument of ``issue`` is its only way in.
+_RESERVED_CLAIMS = frozenset(
+    {"iss", "aud", "iat", "nbf", "exp", "jti", _TENANT_PROFILE_CLAIM}
+)
 
 
 def _base64url_encode(raw: bytes) -> str:
@@ -247,17 +254,23 @@ class SubjectTokenIssuer:
         name: Optional[str] = None,
         email_verified: bool = False,
         extra_claims: dict[str, Any] | None = None,
+        tenant: TenantProfile | None = None,
     ) -> str:
         """Sign a subject token for one logged-in partner user.
 
         ``subject`` must be the partner's stable, never-reused user id: it is
         the identity key the platform stores, so reusing it for a different
         person hands over that person's account.
+
+        ``tenant`` describes the tenant to create if this is its first login,
+        and is signed as the ``tenant_profile`` claim.
         """
         if not subject.strip():
             raise IOCloudFederationError("subject must not be empty")
         if not external_tenant_id.strip():
             raise IOCloudFederationError("external_tenant_id must not be empty")
+        if tenant is not None:
+            self._require_tenant_profile_values(tenant)
 
         claims = self._standard_claims(
             subject=subject,
@@ -265,9 +278,11 @@ class SubjectTokenIssuer:
             email=email,
             name=name,
             email_verified=email_verified,
+            tenant=tenant,
         )
         # Reserved claims stay under the issuer's control: a caller cannot
-        # widen the audience or extend the lifetime through extra_claims.
+        # widen the audience, extend the lifetime, or sign an unchecked tenant
+        # profile through extra_claims.
         for claim_name, claim_value in (extra_claims or {}).items():
             if claim_name in _RESERVED_CLAIMS:
                 raise IOCloudFederationError(
@@ -289,6 +304,20 @@ class SubjectTokenIssuer:
             claim_names=claim_names,
         )
 
+    @staticmethod
+    def _require_tenant_profile_values(tenant: TenantProfile) -> None:
+        """Refuse an empty profile value, the way an empty subject is refused.
+
+        Only emptiness is checked, and the contact email and plan code only
+        when given: lengths are the platform's to judge.
+        """
+        if not tenant.name.strip():
+            raise IOCloudFederationError("tenant.name must not be empty")
+        if tenant.contact_email is not None and not tenant.contact_email.strip():
+            raise IOCloudFederationError("tenant.contact_email must not be empty")
+        if tenant.plan_code is not None and not tenant.plan_code.strip():
+            raise IOCloudFederationError("tenant.plan_code must not be empty")
+
     def _standard_claims(
         self,
         *,
@@ -297,6 +326,7 @@ class SubjectTokenIssuer:
         email: Optional[str],
         name: Optional[str],
         email_verified: bool,
+        tenant: TenantProfile | None,
     ) -> dict[str, Any]:
         issued_at = datetime.now(timezone.utc)
         expires_at = issued_at + timedelta(seconds=self._token_ttl_seconds)
@@ -317,6 +347,8 @@ class SubjectTokenIssuer:
             claims["email_verified"] = email_verified
         if name is not None:
             claims[self._claim_names.name] = name
+        if tenant is not None:
+            claims[_TENANT_PROFILE_CLAIM] = tenant.to_claim()
         return claims
 
 
@@ -328,5 +360,6 @@ __all__ = [
     "SIGNING_ALGORITHM",
     "SubjectTokenClaimNames",
     "SubjectTokenIssuer",
+    "TenantProfile",
     "build_jwks",
 ]

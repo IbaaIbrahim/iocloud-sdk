@@ -7,6 +7,7 @@ use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
 use IOCloud\Laravel\Data\SubjectTokenClaimNames;
+use IOCloud\Laravel\Data\TenantProfile;
 use IOCloud\Laravel\Exceptions\IOCloudFederationException;
 use IOCloud\Laravel\Exceptions\IOCloudTokenExchangeException;
 use IOCloud\Laravel\Federation\FederationSigningKey;
@@ -27,6 +28,10 @@ final class ClientFederationTest extends TestCase
     ];
 
     private const APPLICATION_UUID = '11111111-1111-4111-8111-111111111111';
+
+    private const TENANT_UUID = '22222222-2222-4222-8222-222222222222';
+
+    private const TENANT_NOT_CREATED = "The token's tenant could not be created.";
 
     private const PROVIDER_BODY = [
         'uuid' => '4be507fc-2a1b-4e19-9f0e-2c7f7f5f8a11',
@@ -128,6 +133,111 @@ final class ClientFederationTest extends TestCase
         });
     }
 
+    public function test_a_positional_call_from_before_0_6_0_still_sends_its_claim_names(): void
+    {
+        // allowJitTenants was added last, so $claimNames stayed the tenth argument.
+        Http::fake([
+            'api.example.com/v1/partner/auth/token' => Http::response(self::PARTNER_TOKEN_BODY),
+            'api.example.com/v1/partner/federation/providers' => Http::response(
+                ['data' => ['provider' => self::PROVIDER_BODY]],
+                201,
+            ),
+        ]);
+
+        $this->client()->createIdentityProvider(
+            self::APPLICATION_UUID,
+            'Acme Portal',
+            'https://portal.acme.example',
+            ['ai-ecosystem'],
+            null,
+            ['RS256'],
+            900,
+            false,
+            true,
+            new SubjectTokenClaimNames(user: 'user_id', tenant: 'org_id'),
+        );
+
+        Http::assertSent(function (Request $request): bool {
+            if (! str_contains($request->url(), '/v1/partner/federation/providers')) {
+                return false;
+            }
+            $body = $request->data();
+
+            return $body['tenant_claim'] === 'org_id'
+                && $body['allow_jit_users'] === true
+                && $body['allow_jit_tenants'] === false;
+        });
+    }
+
+    public function test_it_sends_allow_jit_tenants_false_by_default(): void
+    {
+        Http::fake([
+            'api.example.com/v1/partner/auth/token' => Http::response(self::PARTNER_TOKEN_BODY),
+            'api.example.com/v1/partner/federation/providers' => Http::response(
+                ['data' => ['provider' => self::PROVIDER_BODY]],
+                201,
+            ),
+        ]);
+
+        $this->client()->createIdentityProvider(
+            applicationUuid: self::APPLICATION_UUID,
+            name: 'Acme Portal',
+            issuer: 'https://portal.acme.example',
+            allowedAudiences: ['ai-ecosystem'],
+        );
+
+        Http::assertSent(fn (Request $request): bool =>
+            str_contains($request->url(), '/v1/partner/federation/providers')
+            && $request->data()['allow_jit_tenants'] === false);
+    }
+
+    public function test_it_sends_allow_jit_tenants_when_asked_and_reads_it_back(): void
+    {
+        Http::fake([
+            'api.example.com/v1/partner/auth/token' => Http::response(self::PARTNER_TOKEN_BODY),
+            'api.example.com/v1/partner/federation/providers' => Http::response(
+                ['data' => ['provider' => [...self::PROVIDER_BODY, 'allow_jit_tenants' => true]]],
+                201,
+            ),
+        ]);
+
+        $provider = $this->client()->createIdentityProvider(
+            applicationUuid: self::APPLICATION_UUID,
+            name: 'Acme Portal',
+            issuer: 'https://portal.acme.example',
+            allowedAudiences: ['ai-ecosystem'],
+            allowJitUsers: true,
+            allowJitTenants: true,
+        );
+
+        Http::assertSent(function (Request $request): bool {
+            if (! str_contains($request->url(), '/v1/partner/federation/providers')) {
+                return false;
+            }
+            $body = $request->data();
+
+            return $body['allow_jit_users'] === true
+                && $body['allow_jit_tenants'] === true;
+        });
+        $this->assertTrue($provider->allowJitTenants);
+    }
+
+    public function test_a_provider_without_allow_jit_tenants_reads_as_false(): void
+    {
+        // PROVIDER_BODY is what a platform that predates just-in-time tenants
+        // sends: no allow_jit_tenants member at all.
+        Http::fake([
+            'api.example.com/v1/partner/auth/token' => Http::response(self::PARTNER_TOKEN_BODY),
+            'api.example.com/v1/partner/federation/providers' => Http::response(
+                ['data' => ['providers' => [self::PROVIDER_BODY]]],
+            ),
+        ]);
+
+        $providers = $this->client()->listIdentityProviders();
+
+        $this->assertFalse($providers[0]->allowJitTenants);
+    }
+
     public function test_listing_providers_sends_a_get_with_no_request_body(): void
     {
         Http::fake([
@@ -170,6 +280,36 @@ final class ClientFederationTest extends TestCase
         $this->assertSame(3600, $session->expiresIn);
         $this->assertSame(self::SESSION_BODY['user_uuid'], $session->userUuid);
         $this->assertGreaterThan(time(), $session->expiresAt->getTimestamp());
+    }
+
+    public function test_a_session_names_its_tenant_and_whether_this_login_created_it(): void
+    {
+        Http::fake([
+            'api.example.com/v1/federation/token' => Http::response([
+                ...self::SESSION_BODY,
+                'tenant_uuid' => self::TENANT_UUID,
+                'tenant_created' => true,
+            ]),
+        ]);
+
+        $session = $this->client()->exchangeSubjectToken('signed.jwt.value');
+
+        $this->assertSame(self::TENANT_UUID, $session->tenantUuid);
+        $this->assertTrue($session->tenantCreated);
+    }
+
+    public function test_a_platform_without_the_tenant_members_reads_as_null_and_false(): void
+    {
+        // SESSION_BODY is what a platform that predates just-in-time tenants
+        // sends: neither tenant_uuid nor tenant_created.
+        Http::fake([
+            'api.example.com/v1/federation/token' => Http::response(self::SESSION_BODY),
+        ]);
+
+        $session = $this->client()->exchangeSubjectToken('signed.jwt.value');
+
+        $this->assertNull($session->tenantUuid);
+        $this->assertFalse($session->tenantCreated);
     }
 
     public function test_a_rejected_subject_token_raises_the_rfc_6749_error(): void
@@ -221,9 +361,76 @@ final class ClientFederationTest extends TestCase
             return $verified['header']['kid'] === $signingKey->kid()
                 && $verified['claims']['sub'] === 'acme-user-1'
                 && $verified['claims']['tenant_id'] === 'acme-tenant-1'
-                && $verified['claims']['email_verified'] === true;
+                && $verified['claims']['email_verified'] === true
+                && ! array_key_exists('tenant_profile', $verified['claims']);
         });
         $this->assertSame('platform-session-token', $session->accessToken);
+    }
+
+    public function test_federated_login_passes_the_tenant_profile_into_the_token(): void
+    {
+        Http::fake([
+            'api.example.com/v1/federation/token' => Http::response([
+                ...self::SESSION_BODY,
+                'tenant_uuid' => self::TENANT_UUID,
+                'tenant_created' => true,
+            ]),
+        ]);
+        $signingKey = FederationSigningKey::generate();
+        $client = $this->client(new SubjectTokenIssuer(
+            signingKey: $signingKey,
+            issuer: 'https://portal.acme.example',
+            audience: 'ai-ecosystem',
+        ));
+
+        $session = $client->federatedLogin(
+            subject: 'acme-user-1',
+            externalTenantId: 'acme-tenant-1',
+            email: 'user@customer.example',
+            tenant: new TenantProfile(name: 'Acme Ltd', contactEmail: 'ops@acme.example'),
+        );
+
+        Http::assertSent(function (Request $request) use ($signingKey): bool {
+            parse_str($request->body(), $form);
+            $claims = JwsVerifier::verify($form['subject_token'], $signingKey->jwks())['claims'];
+
+            return $claims['tenant_id'] === 'acme-tenant-1'
+                && $claims['tenant_profile'] === [
+                    'name' => 'Acme Ltd',
+                    'contact_email' => 'ops@acme.example',
+                ];
+        });
+        $this->assertSame(self::TENANT_UUID, $session->tenantUuid);
+        $this->assertTrue($session->tenantCreated);
+    }
+
+    public function test_a_tenant_the_platform_could_not_create_refuses_the_login(): void
+    {
+        Http::fake([
+            'api.example.com/v1/federation/token' => Http::response([
+                'error' => 'invalid_target',
+                'error_description' => self::TENANT_NOT_CREATED,
+            ], 400),
+        ]);
+        $client = $this->client(new SubjectTokenIssuer(
+            signingKey: FederationSigningKey::generate(),
+            issuer: 'https://portal.acme.example',
+            audience: 'ai-ecosystem',
+        ));
+
+        try {
+            $client->federatedLogin(
+                subject: 'acme-user-1',
+                externalTenantId: 'acme-tenant-1',
+                email: 'user@customer.example',
+                tenant: new TenantProfile(name: 'Acme Ltd'),
+            );
+            $this->fail('expected the exchange to be rejected');
+        } catch (IOCloudTokenExchangeException $exception) {
+            $this->assertSame(400, $exception->statusCode);
+            $this->assertSame('invalid_target', $exception->error);
+            $this->assertSame(self::TENANT_NOT_CREATED, $exception->errorDescription);
+        }
     }
 
     public function test_federated_login_reports_a_missing_issuer_before_any_request(): void

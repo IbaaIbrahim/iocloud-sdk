@@ -21,11 +21,14 @@ const client = new IOCloudClient({
 const tenant = await client.createTenant({
   applicationUuid: "11111111-1111-1111-1111-111111111111",
   name: "Acme workspace",
-  slug: "acme",
-  contactEmail: "ops@acme.example",
+  contactEmail: "ops@acme.example", // optional
   externalId: "acme-tenant-1", // optional: the tenant claim your tokens carry
 });
 ```
+
+The platform generates the tenant's slug from its name and returns it as
+`tenant.slug` (`acme-workspace-5d3c1a7e`, say), so `createTenant` takes none.
+`tenant.contactEmail` is `null` for a tenant created without one.
 
 Partner and tenant tokens are cached until shortly before expiration. An
 authenticated request that returns `401` is retried once with a refreshed
@@ -128,7 +131,8 @@ tenant holds is refused with `TENANT_EXTERNAL_ID_TAKEN`.
 
 Passing the issuer's own `jwksUrl` and `claimNames` is what keeps the registration
 and the tokens you sign from drifting apart. `listIdentityProviders()` reads back
-what IOCloud has stored.
+what IOCloud has stored. Pass `allowJitTenants: true` as well to create tenants at
+their first login (see below).
 
 ### Log a user in
 
@@ -143,6 +147,7 @@ const session = await client.federatedLogin({
 
 session.accessToken;   // opaque platform token — Authorization: Bearer …
 session.userUuid;      // the IOCloud user this session belongs to
+session.tenantUuid;    // and its tenant
 session.expiresAt;     // no refresh tokens; sign and exchange again
 ```
 
@@ -157,8 +162,8 @@ A rejected exchange throws `IOCloudTokenExchangeError` with the RFC 6749 body:
 
 | `error` | Cause |
 | --- | --- |
-| `invalid_grant` | Unknown or disabled issuer, signature does not verify against the published JWKS, wrong audience, token expired or replayed, missing claims, unverified email where required, a subject no user of the tenant has as its `externalId` with JIT provisioning off, or a user that is not active — a pre-created user is `pending` until activated. |
-| `invalid_target` | No tenant of the provider's application has the tenant claim as its `externalId`, or that tenant is not active. |
+| `invalid_grant` | Unknown or disabled issuer, signature does not verify against the published JWKS, wrong audience, token expired or replayed, missing claims, unverified email where required, a subject no user of the tenant has as its `externalId` with JIT provisioning off, a user that is not active — a pre-created user is `pending` until activated — or a malformed `tenant_profile` when the tenant must be created. |
+| `invalid_target` | No tenant of the provider's application has the tenant claim as its `externalId` and this login may not create one, that tenant is not active, or, rarely, the tenant could not be created. |
 
 `IOCloudFederationError` signals local misconfiguration — an unreadable PEM, a
 missing token issuer — before any request is made.
@@ -202,6 +207,50 @@ await client.federatedLogin({
 An `externalId` another user of the tenant already holds is refused with
 `USER_EXTERNAL_ID_TAKEN`. `status: "deactivated"` stops a user's logins without
 deleting it.
+
+### Creating the tenant at its first login
+
+With `allowJitTenants: true` — which requires `allowJitUsers: true`, or the
+platform answers `422` — a login whose tenant claim names no tenant of the
+provider's application creates that tenant from the `TenantProfile` you pass as
+`tenant`: the name and optional contact email `createTenant` takes. The tenant
+claim becomes its `externalId`, and the login's user is created just in time in
+it, so the login needs `email`:
+
+```ts
+import type { TenantProfile } from "@iocloud/sdk";
+
+const tenant: TenantProfile = {
+  name: "Acme Ltd",
+  contactEmail: "ops@acme.example",
+};
+
+const session = await client.federatedLogin({
+  subject: "acme-user-1001",
+  externalTenantId: "acme-tenant-1",
+  email: "dana.okafor@acme.example",
+  tenant,
+});
+
+if (session.tenantCreated && session.tenantUuid !== null) {
+  // A new tenant has no plan, so it draws on your credits uncapped.
+  await client.subscribeTenant({ tenantUuid: session.tenantUuid, planUuid: plan.uuid });
+}
+```
+
+The profile is signed as the subject token's `tenant_profile` claim, under that
+name whatever `claimNames` say, and `extraClaims` can neither set nor override
+it. Leave out `contactEmail` and the claim carries the name alone. The profile
+creates a tenant and never updates one: once the tenant exists it is ignored,
+so passing it on every login is harmless. The SDK refuses an empty name, or an
+empty contact email when one is given, with `IOCloudFederationError` before
+signing; the platform judges the rest and answers a malformed profile with
+`invalid_grant`.
+
+`tenantCreated` is true only for the login that created the tenant. A platform
+that predates just-in-time tenants sends neither session member, so
+`tenantUuid` reads as `null` and `tenantCreated` as `false` — and a provider's
+`allowJitTenants` as `false`.
 
 ### Rotating keys
 

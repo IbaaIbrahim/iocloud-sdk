@@ -10,15 +10,15 @@ to `packages/laravel` is picked up immediately.
 
 ## What the SDK does, and what is left for you
 
-| Step | Who does it |
-| --- | --- |
-| Generate the RSA keypair | `php artisan iocloud:keys` (SDK) |
-| Build the JWKS document | SDK — `IOCloud::jwks()` |
-| Choose the JWKS URL and route it | You — one line in [`routes/web.php`](routes/web.php) |
-| Sign a subject token per login | SDK, inside `IOCloud::federatedLogin()` |
-| Exchange it for a platform session | SDK, same call |
-| Register the issuer for an application, set the tenant's external id | SDK calls, driven by [`RegisterFederationCommand`](app/Console/Commands/RegisterFederationCommand.php) |
-| Look up the logged-in user | You — [`PartnerFederation`](app/Services/PartnerFederation.php) |
+| Step                                                                 | Who does it                                                                                            |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Generate the RSA keypair                                             | `php artisan iocloud:keys` (SDK)                                                                     |
+| Build the JWKS document                                              | SDK —`IOCloud::jwks()`                                                                              |
+| Choose the JWKS URL and route it                                     | You — one line in[`routes/web.php`](routes/web.php)                                                  |
+| Sign a subject token per login                                       | SDK, inside`IOCloud::federatedLogin()`                                                               |
+| Exchange it for a platform session                                   | SDK, same call                                                                                         |
+| Register the issuer for an application, set the tenant's external id | SDK calls, driven by[`RegisterFederationCommand`](app/Console/Commands/RegisterFederationCommand.php) |
+| Look up the logged-in user                                           | You —[`PartnerFederation`](app/Services/PartnerFederation.php)                                       |
 
 The JWKS endpoint, in full:
 
@@ -102,7 +102,7 @@ Run it:
 php artisan serve --port=8010
 ```
 
-Open <http://127.0.0.1:8010>, pick a user, and press **Continue to IOCloud**.
+Open [http://127.0.0.1:8010](http://127.0.0.1:8010), pick a user, and press **Continue to IOCloud**.
 The result page shows the platform session; a rejection page shows the RFC error
 and what each one means.
 
@@ -144,11 +144,11 @@ Covered:
 
 ## The three failure modes worth knowing
 
-| Symptom | Cause |
-| --- | --- |
-| `invalid_grant` | Issuer not registered or disabled, signature does not verify against the published JWKS, wrong audience, token expired or replayed, or an unverified email where the provider requires one. |
-| `invalid_target` | No tenant of the provider's application carries the token's tenant claim as its external id. Run `demo:federation:register --tenant=…`. |
-| `federation_not_configured` | No signing key or no `IOCLOUD_FEDERATION_ISSUER`. |
+| Symptom                       | Cause                                                                                                                                                                                       |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `invalid_grant`             | Issuer not registered or disabled, signature does not verify against the published JWKS, wrong audience, token expired or replayed, or an unverified email where the provider requires one. |
+| `invalid_target`            | No tenant of the provider's application carries the token's tenant claim as its external id. Run`demo:federation:register --tenant=…`.                                                   |
+| `federation_not_configured` | No signing key or no`IOCLOUD_FEDERATION_ISSUER`.                                                                                                                                          |
 
 IOCloud deliberately keeps `error_description` generic; the precise reason is in
 its `user.federated_login_failed` audit event.

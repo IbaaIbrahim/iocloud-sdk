@@ -18,7 +18,12 @@ import {
 } from "node:crypto";
 
 import { IOCloudFederationError } from "./errors.js";
-import type { JsonWebKey, JsonWebKeySet, SubjectTokenClaimNames } from "./models.js";
+import type {
+  JsonWebKey,
+  JsonWebKeySet,
+  SubjectTokenClaimNames,
+  TenantProfile,
+} from "./models.js";
 
 /**
  * RFC 7518 §3.1 recommends RSASSA-PKCS1-v1_5 with SHA-256 as the baseline; the
@@ -34,8 +39,25 @@ const KEY_USE = "sig";
 const RSA_KEY_SIZE_BITS = 2048;
 const NODE_SIGN_ALGORITHM = "RSA-SHA256";
 
-/** Claims whose values the issuer alone decides. */
-const RESERVED_CLAIMS = new Set(["iss", "aud", "iat", "nbf", "exp", "jti"]);
+/**
+ * The tenant a first login may create. Its name is fixed: the claim mapping
+ * renames the identity values, never this claim.
+ */
+const TENANT_PROFILE_CLAIM = "tenant_profile";
+
+/**
+ * Claims whose values the issuer alone decides. The tenant profile is one of
+ * them: the typed `tenant` input of `issue` is its only way in.
+ */
+const RESERVED_CLAIMS = new Set([
+  "iss",
+  "aud",
+  "iat",
+  "nbf",
+  "exp",
+  "jti",
+  TENANT_PROFILE_CLAIM,
+]);
 
 const DEFAULT_CLAIM_NAMES: SubjectTokenClaimNames = {
   user: "sub",
@@ -64,6 +86,11 @@ export interface IssueSubjectTokenInput {
   name?: string;
   emailVerified?: boolean;
   extraClaims?: Record<string, unknown>;
+  /**
+   * The tenant to create if this is its first login, signed as the
+   * `tenant_profile` claim.
+   */
+  tenant?: TenantProfile;
 }
 
 /** An RSA keypair with the JWK views the partner's OIDC endpoints serve. */
@@ -262,10 +289,14 @@ export class SubjectTokenIssuer {
     if (!input.externalTenantId?.trim()) {
       throw new IOCloudFederationError("externalTenantId must not be empty");
     }
+    if (input.tenant !== undefined) {
+      requireTenantProfileValues(input.tenant);
+    }
 
     const claims = this.#standardClaims(input);
     // Reserved claims stay under the issuer's control: a caller cannot widen
-    // the audience or extend the lifetime through extraClaims.
+    // the audience, extend the lifetime, or sign an unchecked tenant profile
+    // through extraClaims.
     for (const [claimName, claimValue] of Object.entries(input.extraClaims ?? {})) {
       if (RESERVED_CLAIMS.has(claimName)) {
         throw new IOCloudFederationError(
@@ -310,7 +341,29 @@ export class SubjectTokenIssuer {
     if (input.name !== undefined) {
       claims[this.#claimNames.name] = input.name;
     }
+    if (input.tenant !== undefined) {
+      // Keyed as the platform reads it, whatever the claim names are.
+      const profile: Record<string, string> = { name: input.tenant.name };
+      const contactEmail = input.tenant.contactEmail ?? null;
+      if (contactEmail !== null) profile.contact_email = contactEmail;
+      claims[TENANT_PROFILE_CLAIM] = profile;
+    }
     return claims;
+  }
+}
+
+/**
+ * Refuse an empty profile value, the way an empty subject is refused. Only
+ * emptiness is checked, and the contact email only when one is given: lengths
+ * are the platform's to judge.
+ */
+function requireTenantProfileValues(tenant: TenantProfile): void {
+  if (!tenant.name?.trim()) {
+    throw new IOCloudFederationError("tenant.name must not be empty");
+  }
+  const contactEmail = tenant.contactEmail ?? null;
+  if (contactEmail !== null && !contactEmail.trim()) {
+    throw new IOCloudFederationError("tenant.contactEmail must not be empty");
   }
 }
 

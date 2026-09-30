@@ -2,7 +2,7 @@ import unittest
 
 import httpx
 
-from iocloud_sdk import IOCloudClient
+from iocloud_sdk import IOCloudClient, TenantPlan
 
 _PARTNER_TOKEN = {
     "data": {
@@ -25,6 +25,20 @@ _SUBSCRIPTION = {
     "created_at": "2026-08-04T00:00:00Z",
 }
 
+# What a platform that predates plan codes sends: no plan_code member at all.
+_TENANT_PLAN = {
+    "uuid": "3f1b1f70-0000-4000-8000-00000000000a",
+    "name": "Growth",
+    "monthly_price_cents": 1900,
+    "yearly_price_cents": 19000,
+    "tpm": 100,
+    "rpm": 20,
+    "credits": 2000,
+    "user_credits_cap": 500,
+    "user_tpm": 10,
+    "user_rpm": 5,
+}
+
 
 def _client(handler) -> tuple[IOCloudClient, httpx.Client]:
     http_client = httpx.Client(transport=httpx.MockTransport(handler))
@@ -37,6 +51,32 @@ def _client(handler) -> tuple[IOCloudClient, httpx.Client]:
         ),
         http_client,
     )
+
+
+def _list_tenant_plans(plans: list[dict]) -> list[TenantPlan]:
+    """List tenant plans from a platform that answers with ``plans``."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/partner/auth/token":
+            return httpx.Response(200, json=_PARTNER_TOKEN)
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "list": plans,
+                    "pagination": {
+                        "page": 1,
+                        "total_pages": 1,
+                        "limit": 25,
+                        "total": len(plans),
+                    },
+                }
+            },
+        )
+
+    client, http_client = _client(handler)
+    with http_client:
+        return client.list_tenant_plans()
 
 
 class TenantPlanTests(unittest.TestCase):
@@ -82,6 +122,18 @@ class TenantPlanTests(unittest.TestCase):
         self.assertEqual(plans[0].name, "Growth")
         self.assertEqual(plans[0].credits, 2000)
         self.assertEqual(plans[0].user_credits_cap, 500)
+
+    def test_a_tenant_plan_reads_its_plan_code(self) -> None:
+        plans = _list_tenant_plans([{**_TENANT_PLAN, "plan_code": "Growth-2026"}])
+
+        self.assertEqual(plans[0].plan_code, "Growth-2026")
+
+    def test_a_plan_without_a_plan_code_reads_as_none(self) -> None:
+        # Null from a plan that has none; absent from an older platform.
+        plans = _list_tenant_plans([{**_TENANT_PLAN, "plan_code": None}, _TENANT_PLAN])
+
+        self.assertIsNone(plans[0].plan_code)
+        self.assertIsNone(plans[1].plan_code)
 
     def test_subscribe_tenant_activates_and_reports_provisioned_caps(self) -> None:
         sent: dict = {}

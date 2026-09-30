@@ -11,6 +11,12 @@ use DateTimeZone;
  * `accessToken` is opaque — not a JWT — and is presented as a bearer credential
  * on the Gateway job APIs. There are no refresh tokens: when it expires, the
  * partner signs a new subject token and exchanges again.
+ *
+ * `tenantUuid` is the tenant the session belongs to, and `tenantCreated` is
+ * true only for the login that created that tenant from a {@see TenantProfile}.
+ * A new tenant has no plan and draws on the partner's credits uncapped, so
+ * subscribe it when this is true. A platform that predates both sends neither:
+ * null and false.
  */
 final readonly class FederatedSession
 {
@@ -23,6 +29,8 @@ final readonly class FederatedSession
         public string $userUuid,
         public string $name,
         public string $email,
+        public ?string $tenantUuid = null,
+        public bool $tenantCreated = false,
     ) {
     }
 
@@ -31,6 +39,7 @@ final readonly class FederatedSession
     {
         $expiresIn = (int) $payload['expires_in'];
         $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $tenantUuid = $payload['tenant_uuid'] ?? null;
 
         return new self(
             accessToken: (string) $payload['access_token'],
@@ -43,6 +52,8 @@ final readonly class FederatedSession
             userUuid: (string) $payload['user_uuid'],
             name: (string) $payload['name'],
             email: (string) $payload['email'],
+            tenantUuid: $tenantUuid === null ? null : (string) $tenantUuid,
+            tenantCreated: (bool) ($payload['tenant_created'] ?? false),
         );
     }
 }

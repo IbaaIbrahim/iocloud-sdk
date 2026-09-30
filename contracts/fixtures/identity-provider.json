@@ -15,6 +15,7 @@
       "email_claim": "email",
       "name_claim": "name",
       "allow_jit_users": true,
+      "allow_jit_tenants": false,
       "status": "active",
       "created_at": "2026-07-09T10:15:00Z"
     }

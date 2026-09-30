@@ -2,7 +2,7 @@ import unittest
 
 import jwt
 
-from iocloud_sdk import IOCloudFederationError, SubjectTokenClaimNames
+from iocloud_sdk import IOCloudFederationError, SubjectTokenClaimNames, TenantProfile
 from iocloud_sdk.federation import (
     SIGNING_ALGORITHM,
     FederationSigningKey,
@@ -12,6 +12,7 @@ from iocloud_sdk.federation import (
 
 ISSUER = "https://portal.acme.example"
 AUDIENCE = "ai-ecosystem"
+TENANT_PROFILE = TenantProfile(name="Acme Ltd", contact_email="ops@acme.example")
 
 
 def signing_key() -> FederationSigningKey:
@@ -197,6 +198,113 @@ class SubjectTokenIssuerTests(unittest.TestCase):
                         external_tenant_id="tenant-1",
                         extra_claims={reserved: "attacker"},
                     )
+
+    def test_a_tenant_profile_is_signed_as_the_tenant_profile_claim(self) -> None:
+        claims = self.decode(
+            self.issuer.issue(
+                subject="user-1", external_tenant_id="tenant-1", tenant=TENANT_PROFILE
+            )
+        )
+
+        self.assertEqual(
+            claims["tenant_profile"],
+            {"name": "Acme Ltd", "contact_email": "ops@acme.example"},
+        )
+        self.assertEqual(claims["tenant_id"], "tenant-1")
+
+    def test_a_profile_without_a_contact_email_is_signed_without_one(self) -> None:
+        claims = self.decode(
+            self.issuer.issue(
+                subject="user-1",
+                external_tenant_id="tenant-1",
+                tenant=TenantProfile(name="Acme Ltd"),
+            )
+        )
+
+        self.assertEqual(claims["tenant_profile"], {"name": "Acme Ltd"})
+
+    def test_a_plan_code_is_signed_into_the_tenant_profile(self) -> None:
+        claims = self.decode(
+            self.issuer.issue(
+                subject="user-1",
+                external_tenant_id="tenant-1",
+                tenant=TenantProfile(
+                    name="Acme Ltd",
+                    contact_email="ops@acme.example",
+                    plan_code="Growth-2026",
+                ),
+            )
+        )
+
+        self.assertEqual(
+            claims["tenant_profile"],
+            {
+                "name": "Acme Ltd",
+                "contact_email": "ops@acme.example",
+                "plan_code": "Growth-2026",
+            },
+        )
+
+    def test_a_profile_without_a_plan_code_is_signed_without_one(self) -> None:
+        claims = self.decode(
+            self.issuer.issue(
+                subject="user-1",
+                external_tenant_id="tenant-1",
+                tenant=TenantProfile(name="Acme Ltd", plan_code=None),
+            )
+        )
+
+        self.assertNotIn("plan_code", claims["tenant_profile"])
+
+    def test_no_tenant_profile_claim_is_signed_without_a_profile(self) -> None:
+        claims = self.decode(
+            self.issuer.issue(subject="user-1", external_tenant_id="tenant-1")
+        )
+
+        self.assertNotIn("tenant_profile", claims)
+
+    def test_the_claim_mapping_never_renames_the_tenant_profile(self) -> None:
+        issuer = self.issuer.with_claim_names(
+            SubjectTokenClaimNames(user="user_id", tenant="org_id")
+        )
+
+        claims = self.decode(
+            issuer.issue(
+                subject="user-1", external_tenant_id="org-1", tenant=TENANT_PROFILE
+            )
+        )
+
+        self.assertEqual(claims["org_id"], "org-1")
+        self.assertEqual(claims["tenant_profile"], TENANT_PROFILE.to_claim())
+
+    def test_extra_claims_can_neither_set_nor_override_the_tenant_profile(self) -> None:
+        smuggled = {"tenant_profile": {"name": "Other"}}
+
+        with self.assertRaises(IOCloudFederationError):
+            self.issuer.issue(
+                subject="user-1", external_tenant_id="tenant-1", extra_claims=smuggled
+            )
+        with self.assertRaises(IOCloudFederationError):
+            self.issuer.issue(
+                subject="user-1",
+                external_tenant_id="tenant-1",
+                extra_claims=smuggled,
+                tenant=TENANT_PROFILE,
+            )
+
+    def test_blank_tenant_profile_values_are_rejected_at_the_boundary(self) -> None:
+        blank_profiles = {
+            "name": TenantProfile(name=" ", contact_email="ops@acme.example"),
+            "contact_email": TenantProfile(name="Acme Ltd", contact_email="  "),
+            "plan_code": TenantProfile(name="Acme Ltd", plan_code="  "),
+        }
+        for blank_field, profile in blank_profiles.items():
+            with self.subTest(field=blank_field):
+                with self.assertRaises(IOCloudFederationError) as raised:
+                    self.issuer.issue(
+                        subject="user-1", external_tenant_id="tenant-1", tenant=profile
+                    )
+                self.assertIn(blank_field, str(raised.exception))
 
     def test_blank_identity_values_are_rejected_at_the_boundary(self) -> None:
         with self.assertRaises(IOCloudFederationError):

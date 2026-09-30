@@ -13,6 +13,7 @@ use IOCloud\Laravel\Data\SubjectTokenClaimNames;
 use IOCloud\Laravel\Data\Tenant;
 use IOCloud\Laravel\Data\TenantCredential;
 use IOCloud\Laravel\Data\TenantPlan;
+use IOCloud\Laravel\Data\TenantProfile;
 use IOCloud\Laravel\Data\TenantSubscription;
 use IOCloud\Laravel\Data\TenantToken;
 use IOCloud\Laravel\Data\TenantTopup;
@@ -81,19 +82,40 @@ final class IOCloudClient
     /**
      * Create a tenant (space) inside an application owned by the partner.
      *
+     * The platform generates the tenant's slug from `$name` and returns it as
+     * `slug` on the tenant. `$contactEmail` is optional: null leaves it out.
+     *
      * `$externalId` is your own id for the organisation — the value your subject
      * tokens carry in the tenant claim — and must be unique within the
      * application. Omit it for a tenant nobody logs into yet and set it later
      * with {@see setTenantExternalId()}.
+     *
+     * `$slug` is deprecated and exists only to refuse. SDK 0.5.0 took a slug
+     * third, so without this slot a positional call written for it would
+     * silently send its slug as the contact email and its email as the external
+     * id. It is never sent, any value throws, and it goes in 1.0.
+     *
+     * @param string|null $slug Deprecated since 0.6.0: always null.
      */
     public function createTenant(
         string $applicationUuid,
         string $name,
-        string $slug,
-        string $contactEmail,
+        ?string $slug = null,
+        ?string $contactEmail = null,
         ?string $externalId = null,
     ): Tenant {
-        $payload = ['name' => $name, 'slug' => $slug, 'contact_email' => $contactEmail];
+        if ($slug !== null) {
+            throw new InvalidArgumentException(
+                'createTenant() takes no slug: the platform generates tenant slugs since'
+                .' SDK 0.6.0. Remove the slug argument, and pass the contact email and'
+                .' external id by name (contactEmail:, externalId:).'
+            );
+        }
+
+        $payload = ['name' => $name];
+        if ($contactEmail !== null) {
+            $payload['contact_email'] = $contactEmail;
+        }
         if ($externalId !== null) {
             $payload['external_id'] = $externalId;
         }
@@ -414,6 +436,12 @@ final class IOCloudClient
      * {@see SubjectTokenIssuer} that signs the tokens, so the two configurations
      * cannot drift apart.
      *
+     * `$allowJitTenants` lets a login whose tenant claim names no tenant of the
+     * application create it, from the `$tenant` passed to
+     * {@see federatedLogin()}. It requires `$allowJitUsers`, since that tenant's
+     * users can only be created at login: the platform answers 422 to one
+     * without the other.
+     *
      * @param list<string> $allowedAudiences
      * @param list<string> $allowedAlgorithms
      */
@@ -428,6 +456,9 @@ final class IOCloudClient
         bool $requireEmailVerified = false,
         bool $allowJitUsers = false,
         ?SubjectTokenClaimNames $claimNames = null,
+        // Last, not beside $allowJitUsers: 0.6.0 adds it without moving
+        // $claimNames for a caller that passes the arguments positionally.
+        bool $allowJitTenants = false,
     ): IdentityProvider {
         $normalizedIssuer = rtrim($issuer, '/');
         $claims = $claimNames ?? new SubjectTokenClaimNames();
@@ -446,6 +477,7 @@ final class IOCloudClient
             'email_claim' => $claims->email,
             'name_claim' => $claims->name,
             'allow_jit_users' => $allowJitUsers,
+            'allow_jit_tenants' => $allowJitTenants,
         ]);
 
         return IdentityProvider::fromPayload($this->array($data['provider']));
@@ -551,6 +583,10 @@ final class IOCloudClient
      * The whole partner-side login integration, in one call. Requires a
      * `SubjectTokenIssuer` on the client.
      *
+     * `$tenant` is the tenant to create if this is its first login, on a
+     * provider that allows just-in-time tenants; the session's `tenantCreated`
+     * says whether this login created it.
+     *
      * @param array<string, mixed> $extraClaims
      */
     public function federatedLogin(
@@ -560,6 +596,7 @@ final class IOCloudClient
         ?string $name = null,
         bool $emailVerified = false,
         array $extraClaims = [],
+        ?TenantProfile $tenant = null,
     ): FederatedSession {
         return $this->exchangeSubjectToken($this->requireTokenIssuer('federatedLogin')->issue(
             subject: $subject,
@@ -568,6 +605,7 @@ final class IOCloudClient
             name: $name,
             emailVerified: $emailVerified,
             extraClaims: $extraClaims,
+            tenant: $tenant,
         ));
     }
 

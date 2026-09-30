@@ -10,10 +10,15 @@ use DateTimeImmutable;
  * It belongs to one of the partner's applications: a token it signs logs users
  * into that application's tenants only. Every field is an instruction to the
  * platform's token validator; a subject token overrides none of them.
+ * `allowJitTenants` lets a login create its tenant from the token's
+ * `tenant_profile` claim, and needs `allowJitUsers`.
  */
 final readonly class IdentityProvider
 {
     /**
+     * `$allowJitTenants` is last and defaulted so that code building a provider
+     * itself, such as a test double, keeps working.
+     *
      * @param list<string> $allowedAudiences
      * @param list<string> $allowedAlgorithms
      */
@@ -31,6 +36,7 @@ final readonly class IdentityProvider
         public bool $allowJitUsers,
         public string $status,
         public DateTimeImmutable $createdAt,
+        public bool $allowJitTenants = false,
     ) {
     }
 
@@ -60,6 +66,8 @@ final readonly class IdentityProvider
                 name: (string) $payload['name_claim'],
             ),
             allowJitUsers: (bool) $payload['allow_jit_users'],
+            // False from a platform that predates just-in-time tenants.
+            allowJitTenants: (bool) ($payload['allow_jit_tenants'] ?? false),
             status: (string) $payload['status'],
             createdAt: new DateTimeImmutable((string) $payload['created_at']),
         );

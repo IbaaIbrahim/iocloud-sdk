@@ -12,6 +12,10 @@ import {
 
 const ISSUER = "https://portal.acme.example";
 const AUDIENCE = "ai-ecosystem";
+const TENANT_PROFILE = {
+  name: "Acme Ltd",
+  contactEmail: "ops@acme.example",
+};
 
 function tokenIssuer(signingKey, overrides = {}) {
   return new SubjectTokenIssuer({
@@ -252,6 +256,117 @@ test("extra claims are added but cannot override issuer-controlled claims", () =
         }),
       IOCloudFederationError,
       `expected ${reserved} to be rejected`,
+    );
+  }
+});
+
+test("a tenant profile is signed as the tenant_profile claim", () => {
+  const issuer = tokenIssuer(FederationSigningKey.generate());
+
+  const { claims } = verifyWithJwks(
+    issuer.issue({
+      subject: "user-1",
+      externalTenantId: "tenant-1",
+      tenant: TENANT_PROFILE,
+    }),
+    issuer.jwks(),
+  );
+
+  assert.deepEqual(claims.tenant_profile, {
+    name: "Acme Ltd",
+    contact_email: "ops@acme.example",
+  });
+  assert.equal(claims.tenant_id, "tenant-1");
+});
+
+test("a tenant profile without a contact email is signed without one", () => {
+  const issuer = tokenIssuer(FederationSigningKey.generate());
+
+  const { claims } = verifyWithJwks(
+    issuer.issue({
+      subject: "user-1",
+      externalTenantId: "tenant-1",
+      tenant: { name: "Acme Ltd" },
+    }),
+    issuer.jwks(),
+  );
+
+  assert.deepEqual(claims.tenant_profile, { name: "Acme Ltd" });
+});
+
+test("no tenant_profile claim is signed without a profile", () => {
+  const issuer = tokenIssuer(FederationSigningKey.generate());
+
+  const { claims } = verifyWithJwks(
+    issuer.issue({ subject: "user-1", externalTenantId: "tenant-1" }),
+    issuer.jwks(),
+  );
+
+  assert.ok(!("tenant_profile" in claims));
+});
+
+test("the claim mapping never renames the tenant profile", () => {
+  const issuer = tokenIssuer(FederationSigningKey.generate()).withClaimNames({
+    user: "user_id",
+    tenant: "org_id",
+  });
+
+  const { claims } = verifyWithJwks(
+    issuer.issue({
+      subject: "user-1",
+      externalTenantId: "org-1",
+      tenant: TENANT_PROFILE,
+    }),
+    issuer.jwks(),
+  );
+
+  assert.equal(claims.org_id, "org-1");
+  assert.deepEqual(claims.tenant_profile, {
+    name: "Acme Ltd",
+    contact_email: "ops@acme.example",
+  });
+});
+
+test("extra claims can neither set nor override the tenant profile", () => {
+  const issuer = tokenIssuer(FederationSigningKey.generate());
+  const smuggled = { tenant_profile: { name: "Other" } };
+
+  assert.throws(
+    () =>
+      issuer.issue({
+        subject: "user-1",
+        externalTenantId: "tenant-1",
+        extraClaims: smuggled,
+      }),
+    IOCloudFederationError,
+  );
+  assert.throws(
+    () =>
+      issuer.issue({
+        subject: "user-1",
+        externalTenantId: "tenant-1",
+        extraClaims: smuggled,
+        tenant: TENANT_PROFILE,
+      }),
+    IOCloudFederationError,
+  );
+});
+
+test("blank tenant profile values are rejected at the boundary", () => {
+  const issuer = tokenIssuer(FederationSigningKey.generate());
+
+  for (const blankField of ["name", "contactEmail"]) {
+    assert.throws(
+      () =>
+        issuer.issue({
+          subject: "user-1",
+          externalTenantId: "tenant-1",
+          tenant: { ...TENANT_PROFILE, [blankField]: "  " },
+        }),
+      (error) =>
+        error instanceof IOCloudFederationError &&
+        error.message.includes(blankField),
+      `expected a blank ${blankField} to be rejected`,
     );
   }
 });

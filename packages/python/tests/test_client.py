@@ -57,7 +57,6 @@ class IOCloudClientTests(unittest.TestCase):
                 client.create_tenant(
                     application_uuid="11111111-1111-1111-1111-111111111111",
                     name="Acme",
-                    slug="acme",
                     contact_email="ops@acme.example",
                 )
 

@@ -61,7 +61,6 @@ test("raises a typed API error", async () => {
     client.createTenant({
       applicationUuid: "11111111-1111-1111-1111-111111111111",
       name: "Acme",
-      slug: "acme",
       contactEmail: "ops@acme.example",
     }),
     (error) =>

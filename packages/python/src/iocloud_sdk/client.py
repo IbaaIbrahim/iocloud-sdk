@@ -19,6 +19,7 @@ from .models import (
     Tenant,
     TenantCredential,
     TenantPlan,
+    TenantProfile,
     TenantSubscription,
     TenantToken,
     TenantTopup,
@@ -114,22 +115,23 @@ class IOCloudClient:
         *,
         application_uuid: UUID | str,
         name: str,
-        slug: str,
-        contact_email: str,
+        contact_email: str | None = None,
         external_id: str | None = None,
     ) -> Tenant:
         """Create a tenant (space) inside an application owned by the partner.
+
+        The platform generates the tenant's slug from ``name`` and returns it
+        as ``slug`` on the tenant. ``contact_email`` is optional: omit it for
+        none.
 
         ``external_id`` is your own id for the organisation — the value your
         subject tokens carry in the tenant claim — and must be unique within
         the application. Omit it for a tenant nobody logs into yet and set it
         later with :meth:`set_tenant_external_id`.
         """
-        payload: dict[str, Any] = {
-            "name": name,
-            "slug": slug,
-            "contact_email": contact_email,
-        }
+        payload: dict[str, Any] = {"name": name}
+        if contact_email is not None:
+            payload["contact_email"] = contact_email
         if external_id is not None:
             payload["external_id"] = external_id
         data = self._partner_request(
@@ -404,6 +406,7 @@ class IOCloudClient:
         token_max_age_seconds: int = _DEFAULT_TOKEN_MAX_AGE_SECONDS,
         require_email_verified: bool = False,
         allow_jit_users: bool = False,
+        allow_jit_tenants: bool = False,
         claim_names: SubjectTokenClaimNames | None = None,
     ) -> IdentityProvider:
         """Register the partner's own issuer as a trusted identity provider.
@@ -417,6 +420,12 @@ class IOCloudClient:
         the SDK's JWKS document is meant to be served from. Pass the same
         ``claim_names`` as the :class:`~iocloud_sdk.SubjectTokenIssuer` that
         signs the tokens, so the two configurations cannot drift apart.
+
+        ``allow_jit_tenants`` lets a login whose tenant claim names no tenant
+        of the application create it, from the
+        :class:`~iocloud_sdk.TenantProfile` passed to :meth:`federated_login`.
+        It requires ``allow_jit_users``, since that tenant's users can only be
+        created at login: the platform answers 422 to one without the other.
         """
         normalized_issuer = issuer.rstrip("/")
         claims = claim_names or SubjectTokenClaimNames()
@@ -438,6 +447,7 @@ class IOCloudClient:
                 "email_claim": claims.email,
                 "name_claim": claims.name,
                 "allow_jit_users": allow_jit_users,
+                "allow_jit_tenants": allow_jit_tenants,
             },
         )
         return IdentityProvider.from_payload(data["provider"])
@@ -512,11 +522,16 @@ class IOCloudClient:
         name: str | None = None,
         email_verified: bool = False,
         extra_claims: dict[str, Any] | None = None,
+        tenant: TenantProfile | None = None,
     ) -> FederatedSession:
         """Sign a subject token for a logged-in partner user and exchange it.
 
         The whole partner-side login integration, in one call. Requires a
         ``token_issuer`` on the client.
+
+        ``tenant`` is the tenant to create if this is its first login, on a
+        provider that allows just-in-time tenants; the session's
+        ``tenant_created`` says whether this login created it.
         """
         subject_token = self._require_token_issuer("federated_login").issue(
             subject=subject,
@@ -525,6 +540,7 @@ class IOCloudClient:
             name=name,
             email_verified=email_verified,
             extra_claims=extra_claims,
+            tenant=tenant,
         )
         return self.exchange_subject_token(subject_token=subject_token)
 

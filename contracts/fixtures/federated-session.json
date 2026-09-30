@@ -5,5 +5,7 @@
   "expires_in": 35999,
   "user_uuid": "992d64fc-8f2a-4c31-b7e5-1d0a6c9f3b48",
   "name": "Test User",
-  "email": "user@customer.example"
+  "email": "user@customer.example",
+  "tenant_uuid": "5d3c1a7e-9b2f-4c6d-8e1a-3f7b2c9d4e60",
+  "tenant_created": false
 }

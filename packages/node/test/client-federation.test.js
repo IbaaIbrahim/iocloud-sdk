@@ -13,6 +13,12 @@ import {
 
 const BASE_URL = "https://api.example.com";
 const APPLICATION_UUID = "11111111-1111-4111-8111-111111111111";
+const TENANT_UUID = "22222222-2222-4222-8222-222222222222";
+const TENANT_NOT_CREATED = "The token's tenant could not be created.";
+const TENANT_PROFILE = {
+  name: "Acme Ltd",
+  contactEmail: "ops@acme.example",
+};
 const PARTNER_TOKEN_BODY = {
   data: {
     token: {
@@ -148,6 +154,81 @@ test("createIdentityProvider registers the claim names the issuer emits", async 
   assert.equal(body.name_claim, "name");
 });
 
+test("createIdentityProvider sends allowJitTenants false by default", async () => {
+  const { fetch, requestTo } = recordingFetch({
+    "/v1/partner/auth/token": partnerTokenResponse,
+    "/v1/partner/federation/providers": () =>
+      Response.json({ data: { provider: PROVIDER_BODY } }, { status: 201 }),
+  });
+  const client = new IOCloudClient({
+    clientId: "client-id",
+    clientSecret: "client-secret",
+    baseUrl: BASE_URL,
+    fetch,
+  });
+
+  await client.createIdentityProvider({
+    applicationUuid: APPLICATION_UUID,
+    name: "Acme Portal",
+    issuer: "https://portal.acme.example",
+    allowedAudiences: ["ai-ecosystem"],
+  });
+
+  const body = JSON.parse(requestTo("/v1/partner/federation/providers").body);
+  assert.equal(body.allow_jit_tenants, false);
+});
+
+test("createIdentityProvider sends allowJitTenants when asked and reads it back", async () => {
+  const { fetch, requestTo } = recordingFetch({
+    "/v1/partner/auth/token": partnerTokenResponse,
+    "/v1/partner/federation/providers": () =>
+      Response.json(
+        { data: { provider: { ...PROVIDER_BODY, allow_jit_tenants: true } } },
+        { status: 201 },
+      ),
+  });
+  const client = new IOCloudClient({
+    clientId: "client-id",
+    clientSecret: "client-secret",
+    baseUrl: BASE_URL,
+    fetch,
+  });
+
+  const provider = await client.createIdentityProvider({
+    applicationUuid: APPLICATION_UUID,
+    name: "Acme Portal",
+    issuer: "https://portal.acme.example",
+    allowedAudiences: ["ai-ecosystem"],
+    allowJitUsers: true,
+    allowJitTenants: true,
+  });
+
+  const body = JSON.parse(requestTo("/v1/partner/federation/providers").body);
+  assert.equal(body.allow_jit_users, true);
+  assert.equal(body.allow_jit_tenants, true);
+  assert.equal(provider.allowJitTenants, true);
+});
+
+test("a provider without allow_jit_tenants reads as false", async () => {
+  // PROVIDER_BODY is what a platform that predates just-in-time tenants sends:
+  // no allow_jit_tenants member at all.
+  const { fetch } = recordingFetch({
+    "/v1/partner/auth/token": partnerTokenResponse,
+    "/v1/partner/federation/providers": () =>
+      Response.json({ data: { providers: [PROVIDER_BODY] } }),
+  });
+  const client = new IOCloudClient({
+    clientId: "client-id",
+    clientSecret: "client-secret",
+    baseUrl: BASE_URL,
+    fetch,
+  });
+
+  const [provider] = await client.listIdentityProviders();
+
+  assert.equal(provider.allowJitTenants, false);
+});
+
 test("listIdentityProviders sends a GET with no request body", async () => {
   const { fetch, requestTo } = recordingFetch({
     "/v1/partner/auth/token": partnerTokenResponse,
@@ -199,6 +280,37 @@ test("exchangeSubjectToken posts the RFC 8693 form grammar unauthenticated", asy
   assert.equal(session.expiresIn, 3600);
   assert.equal(session.userUuid, SESSION_BODY.user_uuid);
   assert.ok(session.expiresAt.getTime() > Date.now());
+});
+
+test("a session names its tenant and whether this login created it", async () => {
+  const { fetch } = recordingFetch({
+    "/v1/federation/token": () =>
+      Response.json({
+        ...SESSION_BODY,
+        tenant_uuid: TENANT_UUID,
+        tenant_created: true,
+      }),
+  });
+  const client = new IOCloudClient({ baseUrl: BASE_URL, fetch });
+
+  const session = await client.exchangeSubjectToken("signed.jwt.value");
+
+  assert.equal(session.tenantUuid, TENANT_UUID);
+  assert.equal(session.tenantCreated, true);
+});
+
+test("a platform without the tenant members reads as null and false", async () => {
+  // SESSION_BODY is what a platform that predates just-in-time tenants sends:
+  // neither tenant_uuid nor tenant_created.
+  const { fetch } = recordingFetch({
+    "/v1/federation/token": () => Response.json(SESSION_BODY),
+  });
+  const client = new IOCloudClient({ baseUrl: BASE_URL, fetch });
+
+  const session = await client.exchangeSubjectToken("signed.jwt.value");
+
+  assert.equal(session.tenantUuid, null);
+  assert.equal(session.tenantCreated, false);
 });
 
 test("a rejected subject token raises the RFC 6749 error", async () => {
@@ -322,7 +434,79 @@ test("federatedLogin signs and exchanges in one call", async () => {
   assert.equal(claims.sub, "acme-user-1");
   assert.equal(claims.tenant_id, "acme-tenant-1");
   assert.equal(claims.email_verified, true);
+  assert.ok(!("tenant_profile" in claims));
   assert.equal(session.accessToken, "platform-session-token");
+});
+
+test("federatedLogin passes the tenant profile into the token it exchanges", async () => {
+  const { fetch, requestTo } = recordingFetch({
+    "/v1/federation/token": () =>
+      Response.json({
+        ...SESSION_BODY,
+        tenant_uuid: TENANT_UUID,
+        tenant_created: true,
+      }),
+  });
+  const client = new IOCloudClient({
+    baseUrl: BASE_URL,
+    fetch,
+    tokenIssuer: new SubjectTokenIssuer({
+      signingKey: FederationSigningKey.generate(),
+      issuer: "https://portal.acme.example",
+      audience: "ai-ecosystem",
+    }),
+  });
+
+  const session = await client.federatedLogin({
+    subject: "acme-user-1",
+    externalTenantId: "acme-tenant-1",
+    email: "user@customer.example",
+    tenant: TENANT_PROFILE,
+  });
+
+  const form = new URLSearchParams(requestTo("/v1/federation/token").body);
+  const [, encodedPayload] = form.get("subject_token").split(".");
+  const claims = JSON.parse(Buffer.from(encodedPayload, "base64url").toString());
+  assert.equal(claims.tenant_id, "acme-tenant-1");
+  assert.deepEqual(claims.tenant_profile, {
+    name: "Acme Ltd",
+    contact_email: "ops@acme.example",
+  });
+  assert.equal(session.tenantUuid, TENANT_UUID);
+  assert.equal(session.tenantCreated, true);
+});
+
+test("a tenant the platform could not create refuses the login", async () => {
+  const { fetch } = recordingFetch({
+    "/v1/federation/token": () =>
+      Response.json(
+        { error: "invalid_target", error_description: TENANT_NOT_CREATED },
+        { status: 400 },
+      ),
+  });
+  const client = new IOCloudClient({
+    baseUrl: BASE_URL,
+    fetch,
+    tokenIssuer: new SubjectTokenIssuer({
+      signingKey: FederationSigningKey.generate(),
+      issuer: "https://portal.acme.example",
+      audience: "ai-ecosystem",
+    }),
+  });
+
+  await assert.rejects(
+    client.federatedLogin({
+      subject: "acme-user-1",
+      externalTenantId: "acme-tenant-1",
+      email: "user@customer.example",
+      tenant: { name: "Acme Ltd" },
+    }),
+    (error) =>
+      error instanceof IOCloudTokenExchangeError &&
+      error.statusCode === 400 &&
+      error.error === "invalid_target" &&
+      error.errorDescription === TENANT_NOT_CREATED,
+  );
 });
 
 test("federatedLogin reports a missing issuer before touching the network", async () => {

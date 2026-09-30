@@ -48,6 +48,7 @@ export type {
   Tenant,
   TenantCredential,
   TenantPlan,
+  TenantProfile,
   TenantSubscription,
   TenantToken,
   TenantTopup,

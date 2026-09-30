@@ -3,6 +3,7 @@
 namespace IOCloud\Laravel\Tests;
 
 use IOCloud\Laravel\Data\SubjectTokenClaimNames;
+use IOCloud\Laravel\Data\TenantProfile;
 use IOCloud\Laravel\Exceptions\IOCloudFederationException;
 use IOCloud\Laravel\Federation\FederationSigningKey;
 use IOCloud\Laravel\Federation\SubjectTokenIssuer;
@@ -146,6 +147,97 @@ final class SubjectTokenIssuerTest extends PHPUnitTestCase
         ];
     }
 
+    public function test_a_tenant_profile_is_signed_as_the_tenant_profile_claim(): void
+    {
+        $claims = $this->claimsOf($this->issuer->issue(
+            subject: 'user-1',
+            externalTenantId: 'tenant-1',
+            tenant: self::tenantProfile(),
+        ));
+
+        $this->assertSame(
+            ['name' => 'Acme Ltd', 'contact_email' => 'ops@acme.example'],
+            $claims['tenant_profile'],
+        );
+        $this->assertSame('tenant-1', $claims['tenant_id']);
+    }
+
+    public function test_a_profile_without_a_contact_email_is_signed_without_one(): void
+    {
+        $claims = $this->claimsOf($this->issuer->issue(
+            subject: 'user-1',
+            externalTenantId: 'tenant-1',
+            tenant: new TenantProfile(name: 'Acme Ltd'),
+        ));
+
+        $this->assertSame(['name' => 'Acme Ltd'], $claims['tenant_profile']);
+    }
+
+    public function test_no_tenant_profile_claim_is_signed_without_a_profile(): void
+    {
+        $claims = $this->claimsOf($this->issuer->issue('user-1', 'tenant-1'));
+
+        $this->assertArrayNotHasKey('tenant_profile', $claims);
+    }
+
+    public function test_the_claim_mapping_never_renames_the_tenant_profile(): void
+    {
+        $issuer = $this->issuer->withClaimNames(
+            new SubjectTokenClaimNames(user: 'user_id', tenant: 'org_id')
+        );
+
+        $claims = JwsVerifier::verify(
+            $issuer->issue(subject: 'user-1', externalTenantId: 'org-1', tenant: self::tenantProfile()),
+            $issuer->jwks(),
+        )['claims'];
+
+        $this->assertSame('org-1', $claims['org_id']);
+        $this->assertSame(self::tenantProfile()->toClaim(), $claims['tenant_profile']);
+    }
+
+    #[DataProvider('typedTenantProfiles')]
+    public function test_extra_claims_can_neither_set_nor_override_the_tenant_profile(
+        ?TenantProfile $tenant,
+    ): void {
+        $this->expectException(IOCloudFederationException::class);
+
+        $this->issuer->issue(
+            subject: 'user-1',
+            externalTenantId: 'tenant-1',
+            extraClaims: ['tenant_profile' => ['name' => 'Other']],
+            tenant: $tenant,
+        );
+    }
+
+    /** @return array<string, array{?TenantProfile}> */
+    public static function typedTenantProfiles(): array
+    {
+        return [
+            'without a typed profile' => [null],
+            'beside a typed profile' => [self::tenantProfile()],
+        ];
+    }
+
+    #[DataProvider('blankTenantProfiles')]
+    public function test_blank_tenant_profile_values_are_rejected_at_the_boundary(
+        TenantProfile $tenant,
+        string $blankField,
+    ): void {
+        $this->expectException(IOCloudFederationException::class);
+        $this->expectExceptionMessage("tenant.{$blankField} must not be empty");
+
+        $this->issuer->issue(subject: 'user-1', externalTenantId: 'tenant-1', tenant: $tenant);
+    }
+
+    /** @return array<string, array{TenantProfile, string}> */
+    public static function blankTenantProfiles(): array
+    {
+        return [
+            'name' => [new TenantProfile(name: ' ', contactEmail: 'ops@acme.example'), 'name'],
+            'contactEmail' => [new TenantProfile(name: 'Acme Ltd', contactEmail: '  '), 'contactEmail'],
+        ];
+    }
+
     public function test_a_blank_subject_is_rejected_at_the_boundary(): void
     {
         $this->expectException(IOCloudFederationException::class);
@@ -187,5 +279,10 @@ final class SubjectTokenIssuerTest extends PHPUnitTestCase
     private function claimsOf(string $token): array
     {
         return JwsVerifier::verify($token, $this->issuer->jwks())['claims'];
+    }
+
+    private static function tenantProfile(): TenantProfile
+    {
+        return new TenantProfile(name: 'Acme Ltd', contactEmail: 'ops@acme.example');
     }
 }
