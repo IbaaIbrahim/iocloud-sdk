@@ -585,13 +585,14 @@ final class IOCloudClient
      *
      * `$tenant` is the tenant to create if this is its first login, on a
      * provider that allows just-in-time tenants; the session's `tenantCreated`
-     * says whether this login created it.
+     * says whether this login created it. `$externalTenantId` may be left out
+     * when `$tenant` carries one, and must equal it when both are given.
      *
      * @param array<string, mixed> $extraClaims
      */
     public function federatedLogin(
         string $subject,
-        string $externalTenantId,
+        ?string $externalTenantId = null,
         ?string $email = null,
         ?string $name = null,
         bool $emailVerified = false,

@@ -24,6 +24,30 @@ const SUBSCRIPTION = {
   created_at: "2026-08-04T00:00:00Z",
 };
 
+/** What a platform that predates plan codes sends: no plan_code member at all. */
+const TENANT_PLAN = {
+  uuid: "3f1b1f70-0000-4000-8000-00000000000a",
+  name: "Growth",
+  monthly_price_cents: 1900,
+  yearly_price_cents: 19000,
+  tpm: 100,
+  rpm: 20,
+  credits: 2000,
+  user_credits_cap: 500,
+  user_tpm: 10,
+  user_rpm: 5,
+};
+
+/** The paginated envelope the tenant plan listing answers with. */
+function planList(plans) {
+  return Response.json({
+    data: {
+      list: plans,
+      pagination: { page: 1, total_pages: 1, limit: 25, total: plans.length },
+    },
+  });
+}
+
 /** Answers the token call, then delegates to `handler` for the real request. */
 function partnerFetch(handler) {
   const seen = [];
@@ -78,6 +102,28 @@ test("lists tenant plans from the paginated envelope", async () => {
   assert.equal(plans.length, 1);
   assert.equal(plans[0].credits, 2000);
   assert.equal(plans[0].userCreditsCap, 500);
+});
+
+test("a tenant plan reads its plan code", async () => {
+  const { fetch } = partnerFetch(() =>
+    planList([{ ...TENANT_PLAN, plan_code: "Growth-2026" }]),
+  );
+
+  const [plan] = await client(fetch).listTenantPlans();
+
+  assert.equal(plan.planCode, "Growth-2026");
+});
+
+test("a plan without a plan code reads as null", async () => {
+  // Null from a plan that has none; absent from an older platform.
+  const { fetch } = partnerFetch(() =>
+    planList([{ ...TENANT_PLAN, plan_code: null }, TENANT_PLAN]),
+  );
+
+  const plans = await client(fetch).listTenantPlans();
+
+  assert.equal(plans[0].planCode, null);
+  assert.equal(plans[1].planCode, null);
 });
 
 test("subscribes a tenant and activates by default", async () => {

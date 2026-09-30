@@ -498,7 +498,8 @@ paths:
         the platform envelope. On a provider with allow_jit_tenants, a token
         whose tenant claim names no tenant of the provider's application
         creates that tenant from its tenant_profile claim (TenantProfileClaim),
-        then the user just in time.
+        on the tenant plan its plan_code names if it names one, then the user
+        just in time.
       requestBody:
         required: true
         content:
@@ -519,8 +520,10 @@ paths:
             malformed tenant_profile claim when the exchange needs it to create
             the tenant. invalid_target means no tenant of the provider's
             application has the tenant claim as its external_id and this login
-            may not create one, that tenant is not active, or, rarely, the
-            tenant could not be created ("The token's tenant could not be
+            may not create one, that tenant is not active, the tenant_profile's
+            plan_code names none of the partner's tenant plans ("The token's
+            tenant plan does not exist.", and nothing is created), or, rarely,
+            the tenant could not be created ("The token's tenant could not be
             created.").
           content:
             application/json:
@@ -803,6 +806,20 @@ components:
       properties:
         uuid: { type: string, format: uuid }
         name: { type: string }
+        plan_code:
+          type: string
+          minLength: 1
+          maxLength: 100
+          nullable: true
+          description: >-
+            The partner's own code for the plan, unique among its tenant plans
+            and matched exactly, case included. A just-in-time login names the
+            plan its new tenant is created on by it
+            (TenantProfileClaim.plan_code). Set in the Admin Dashboard, or with
+            POST /v1/partner/plans/tenant and PATCH
+            /v1/partner/plans/tenant/{plan_uuid}. Null for a plan without one;
+            absent from a platform that predates plan codes, which the SDKs
+            read as null.
         monthly_price_cents: { type: integer, minimum: 0 }
         yearly_price_cents: { type: integer, minimum: 0 }
         tpm: { type: integer, minimum: 1 }
@@ -1297,14 +1314,17 @@ components:
       description: >-
         The subject token's optional tenant_profile claim: the tenant a
         just-in-time login creates, with the fields a partner sends to create
-        one. Carried inside the partner-signed JWT, never sent to this API as
-        JSON, and never renamed by the provider's claim mapping. Read only when
-        the tenant claim names no tenant of the provider's application and the
-        provider has allow_jit_tenants: the tenant is then created, active,
-        with the tenant claim as its external_id and a slug the platform
-        generates from name, as it does for CreateTenantRequest (a slug in the
-        claim is ignored). It never updates a tenant that exists. When it is
-        needed and malformed, the exchange answers invalid_grant.
+        one, plus the plan to create it on (plan_code), which
+        CreateTenantRequest does not take. Carried inside the partner-signed
+        JWT, never sent to this API as JSON, and never renamed by the
+        provider's claim mapping. Read only when the tenant claim names no
+        tenant of the provider's application and the provider has
+        allow_jit_tenants: the tenant is then created, active, with the tenant
+        claim as its external_id and a slug the platform generates from name,
+        as it does for CreateTenantRequest (a slug in the claim is ignored).
+        It never updates a tenant that exists, so it never changes an existing
+        tenant's plan either. When it is needed and malformed, the exchange
+        answers invalid_grant.
       required: [name]
       properties:
         name: { type: string, minLength: 1, maxLength: 255 }
@@ -1315,6 +1335,24 @@ components:
           description: >-
             Optional; omit it for none. One present but not a string of 1 to
             255 characters is malformed.
+        plan_code:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: >-
+            Optional: the plan_code of one of the partner's tenant plans
+            (TenantPlan.plan_code), matched exactly, case included. The tenant
+            is created subscribed to that plan, on a monthly billing cycle and
+            activated at once, as subscribeTenant does with activate_now; its
+            cap and the cap of the login's user are provisioned from the plan.
+            The subscription is written in the same transaction as the tenant,
+            so the tenant exists with its plan or not at all. A code that names
+            none of the partner's tenant plans refuses the login with
+            invalid_target ("The token's tenant plan does not exist.") and
+            creates nothing. One present but not a string of 1 to 100
+            characters is malformed. Omit it and the tenant has no plan: it
+            draws on the partner's credits uncapped until the partner
+            subscribes it.
     TokenExchangeResponse:
       type: object
       required:
@@ -1346,7 +1384,8 @@ components:
         tenant_created:
           type: boolean
           description: >-
-            True when this exchange created the tenant. It has no plan yet and
+            True when this exchange created the tenant. Unless its
+            tenant_profile named a plan by plan_code, it has no plan yet and
             draws on the partner's credits uncapped until the partner
             subscribes it. Absent from a platform that predates just-in-time
             tenants; the SDKs read that as false.

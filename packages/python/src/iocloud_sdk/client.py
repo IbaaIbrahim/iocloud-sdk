@@ -517,7 +517,7 @@ class IOCloudClient:
         self,
         *,
         subject: str,
-        external_tenant_id: str,
+        external_tenant_id: str | None = None,
         email: str | None = None,
         name: str | None = None,
         email_verified: bool = False,
@@ -532,6 +532,8 @@ class IOCloudClient:
         ``tenant`` is the tenant to create if this is its first login, on a
         provider that allows just-in-time tenants; the session's
         ``tenant_created`` says whether this login created it.
+        ``external_tenant_id`` may be left out when ``tenant`` carries one, and
+        must equal it when both are given.
         """
         subject_token = self._require_token_issuer("federated_login").issue(
             subject=subject,

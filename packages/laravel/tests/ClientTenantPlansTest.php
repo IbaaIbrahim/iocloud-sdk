@@ -3,6 +3,7 @@
 namespace IOCloud\Laravel\Tests;
 
 use Illuminate\Support\Facades\Http;
+use IOCloud\Laravel\Data\TenantPlan;
 use IOCloud\Laravel\IOCloudClient;
 
 final class ClientTenantPlansTest extends TestCase
@@ -37,6 +38,45 @@ final class ClientTenantPlansTest extends TestCase
         ];
     }
 
+    /** @return array<string, mixed> What a platform that predates plan codes sends. */
+    private function planPayload(): array
+    {
+        return [
+            'uuid' => '3f1b1f70-0000-4000-8000-00000000000a',
+            'name' => 'Growth',
+            'monthly_price_cents' => 1900,
+            'yearly_price_cents' => 19000,
+            'tpm' => 100,
+            'rpm' => 20,
+            'credits' => 2000,
+            'user_credits_cap' => 500,
+            'user_tpm' => 10,
+            'user_rpm' => 5,
+        ];
+    }
+
+    /**
+     * List tenant plans from a platform that answers with `$plans`.
+     *
+     * @param list<array<string, mixed>> $plans
+     * @return list<TenantPlan>
+     */
+    private function listPlans(array $plans): array
+    {
+        Http::fake($this->fakePartnerToken() + [
+            'api.example.com/v1/partner/plans/tenant*' => Http::response([
+                'data' => [
+                    'list' => $plans,
+                    'pagination' => [
+                        'page' => 1, 'total_pages' => 1, 'limit' => 25, 'total' => count($plans),
+                    ],
+                ],
+            ]),
+        ]);
+
+        return $this->app->make(IOCloudClient::class)->listTenantPlans();
+    }
+
     public function test_it_lists_tenant_plans(): void
     {
         Http::fake($this->fakePartnerToken() + [
@@ -67,6 +107,27 @@ final class ClientTenantPlansTest extends TestCase
         $this->assertSame('Growth', $plans[0]->name);
         $this->assertSame(2000, $plans[0]->credits);
         $this->assertSame(500, $plans[0]->userCreditsCap);
+    }
+
+    public function test_a_tenant_plan_reads_its_plan_code(): void
+    {
+        $plans = $this->listPlans([
+            array_merge($this->planPayload(), ['plan_code' => 'Growth-2026']),
+        ]);
+
+        $this->assertSame('Growth-2026', $plans[0]->planCode);
+    }
+
+    public function test_a_plan_without_a_plan_code_reads_as_null(): void
+    {
+        // Null from a plan that has none; absent from an older platform.
+        $plans = $this->listPlans([
+            array_merge($this->planPayload(), ['plan_code' => null]),
+            $this->planPayload(),
+        ]);
+
+        $this->assertNull($plans[0]->planCode);
+        $this->assertNull($plans[1]->planCode);
     }
 
     public function test_it_subscribes_a_tenant_and_activates_by_default(): void

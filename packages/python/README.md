@@ -221,7 +221,7 @@ A rejected exchange raises `IOCloudTokenExchangeError` with the RFC 6749 body:
 | `error` | Cause |
 | --- | --- |
 | `invalid_grant` | Unknown or disabled issuer, signature does not verify against the published JWKS, wrong audience, token expired or replayed, missing claims, unverified email where required, a subject no user of the tenant has as its `external_id` with JIT provisioning off, a user that is not active — a pre-created user is `pending` until activated — or a malformed `tenant_profile` when the tenant must be created. |
-| `invalid_target` | No tenant of the provider's application has the tenant claim as its `external_id` and this login may not create one, that tenant is not active, or, rarely, the tenant could not be created. |
+| `invalid_target` | No tenant of the provider's application has the tenant claim as its `external_id` and this login may not create one, that tenant is not active, the profile's `plan_code` names none of your tenant plans, or, rarely, the tenant could not be created. |
 
 `IOCloudFederationError` signals local misconfiguration — no signing key, an
 unreadable PEM — before any request is made.
@@ -266,33 +266,66 @@ a user's logins without deleting it.
 With `allow_jit_tenants=True` — which requires `allow_jit_users=True`, or the
 platform answers `422` — a login whose tenant claim names no tenant of the
 provider's application creates that tenant from the `TenantProfile` you pass as
-`tenant`: the name and optional contact email `create_tenant` takes. The tenant
-claim becomes its `external_id`, and the login's user is created just in time
-in it, so the login needs `email`:
+`tenant`: the external id, name and optional contact email `create_tenant`
+takes, plus an optional plan (below). The external id is the login's tenant
+claim, and becomes the tenant's `external_id`; the login's user is created
+just in time in it, so the login needs `email`:
 
 ```python
 from iocloud_sdk import TenantProfile
 
 session = client.federated_login(
     subject="acme-user-1001",
-    external_tenant_id="acme-tenant-1",
     email="dana.okafor@acme.example",
-    tenant=TenantProfile(name="Acme Ltd", contact_email="ops@acme.example"),
+    tenant=TenantProfile(
+        external_tenant_id="acme-tenant-1",
+        name="Acme Ltd",
+        contact_email="ops@acme.example",
+    ),
 )
 
 if session.tenant_created:
-    # A new tenant has no plan, so it draws on your credits uncapped.
+    # Created without a plan_code, a new tenant has no plan, so it draws on
+    # your credits uncapped.
     client.subscribe_tenant(tenant_uuid=session.tenant_uuid, plan_uuid=plan.uuid)
 ```
 
-The profile is signed as the subject token's `tenant_profile` claim, under that
-name whatever `claim_names` say, and `extra_claims` can neither set nor
-override it. Leave out `contact_email` and the claim carries the name alone.
-The profile creates a tenant and never updates one: once the tenant exists it
-is ignored, so passing it on every login is harmless. The SDK refuses an empty
-name, or an empty contact email when one is given, with
-`IOCloudFederationError` before signing; the platform judges the rest and
-answers a malformed profile with `invalid_grant`.
+Or name one of your tenant plans by its code, and the login creates the tenant
+on that plan, with nothing to subscribe afterwards:
+
+```python
+session = client.federated_login(
+    subject="acme-user-1001",
+    email="dana.okafor@acme.example",
+    tenant=TenantProfile(
+        external_tenant_id="acme-tenant-1", name="Acme Ltd", plan_code="growth"
+    ),
+)
+```
+
+The tenant is then subscribed to that plan, on a monthly billing cycle and
+active at once, as `subscribe_tenant` leaves it by default, with its cap and
+the cap of the login's user provisioned from the plan, all in the same
+transaction as the tenant: it exists on its plan or not at all. The code is
+matched exactly, case included, against
+the `plan_code` you set on the plan in the Admin Dashboard, which
+`list_tenant_plans()` returns as `plan.plan_code` (`None` for a plan without
+one). A code none of your plans has refuses the login with `invalid_target`
+and creates nothing.
+
+The profile's `external_tenant_id` is sent once, as the tenant claim, so
+`federated_login` needs no `external_tenant_id` of its own; pass both and they
+must be the same id, or the SDK refuses the login before signing, since the
+platform finds and creates the tenant by the claim alone. The rest is signed
+as the subject token's `tenant_profile` claim, under that name whatever
+`claim_names` say, and `extra_claims` can neither set nor override it. Leave
+out `contact_email` and `plan_code` and the claim carries the name alone. The profile creates a tenant and never updates one: once the tenant
+exists it is ignored, so passing it on every login is harmless, and it never
+changes an existing tenant's plan. The SDK refuses an empty name, or an empty
+contact email, plan code or external tenant id when one is given, with
+`IOCloudFederationError`
+before signing; the platform judges the rest and answers a malformed profile
+with `invalid_grant`.
 
 `tenant_created` is true only for the login that created the tenant. A
 platform that predates just-in-time tenants sends neither session member, so

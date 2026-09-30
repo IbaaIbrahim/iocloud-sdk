@@ -249,7 +249,7 @@ class SubjectTokenIssuer:
         self,
         *,
         subject: str,
-        external_tenant_id: str,
+        external_tenant_id: Optional[str] = None,
         email: Optional[str] = None,
         name: Optional[str] = None,
         email_verified: bool = False,
@@ -263,14 +263,15 @@ class SubjectTokenIssuer:
         person hands over that person's account.
 
         ``tenant`` describes the tenant to create if this is its first login,
-        and is signed as the ``tenant_profile`` claim.
+        and is signed as the ``tenant_profile`` claim. ``external_tenant_id``
+        becomes the tenant claim; it may be left out when ``tenant`` carries
+        one, and must equal it when both are given.
         """
         if not subject.strip():
             raise IOCloudFederationError("subject must not be empty")
-        if not external_tenant_id.strip():
-            raise IOCloudFederationError("external_tenant_id must not be empty")
         if tenant is not None:
             self._require_tenant_profile_values(tenant)
+        external_tenant_id = self._login_tenant_id(external_tenant_id, tenant)
 
         claims = self._standard_claims(
             subject=subject,
@@ -308,15 +309,46 @@ class SubjectTokenIssuer:
     def _require_tenant_profile_values(tenant: TenantProfile) -> None:
         """Refuse an empty profile value, the way an empty subject is refused.
 
-        Only emptiness is checked, and the contact email and plan code only
-        when given: lengths are the platform's to judge.
+        Only emptiness is checked, and the optional values only when given:
+        lengths are the platform's to judge.
         """
         if not tenant.name.strip():
             raise IOCloudFederationError("tenant.name must not be empty")
-        if tenant.contact_email is not None and not tenant.contact_email.strip():
-            raise IOCloudFederationError("tenant.contact_email must not be empty")
-        if tenant.plan_code is not None and not tenant.plan_code.strip():
-            raise IOCloudFederationError("tenant.plan_code must not be empty")
+        optional_values = {
+            "contact_email": tenant.contact_email,
+            "plan_code": tenant.plan_code,
+            "external_tenant_id": tenant.external_tenant_id,
+        }
+        for field_name, value in optional_values.items():
+            if value is not None and not value.strip():
+                raise IOCloudFederationError(f"tenant.{field_name} must not be empty")
+
+    @staticmethod
+    def _login_tenant_id(
+        external_tenant_id: Optional[str], tenant: TenantProfile | None
+    ) -> str:
+        """The tenant claim's value: the login's ``external_tenant_id``, else its profile's.
+
+        Given twice, it must be one id: the platform finds the tenant by the
+        claim, and creates it under that id, whatever the profile said.
+        """
+        profile_tenant_id = tenant.external_tenant_id if tenant is not None else None
+        if (
+            external_tenant_id is not None
+            and profile_tenant_id is not None
+            and external_tenant_id != profile_tenant_id
+        ):
+            raise IOCloudFederationError(
+                "tenant.external_tenant_id must equal external_tenant_id"
+            )
+        tenant_id = external_tenant_id if external_tenant_id is not None else profile_tenant_id
+        if tenant_id is None:
+            raise IOCloudFederationError(
+                "external_tenant_id is required: pass it, or a tenant that carries it"
+            )
+        if not tenant_id.strip():
+            raise IOCloudFederationError("external_tenant_id must not be empty")
+        return tenant_id
 
     def _standard_claims(
         self,

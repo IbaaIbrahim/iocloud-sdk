@@ -522,6 +522,36 @@ class FederatedLoginTests(ClientFederationTestCase):
         self.assertEqual(str(session.tenant_uuid), TENANT_UUID)
         self.assertIs(session.tenant_created, True)
 
+    def test_a_tenant_profile_carrying_the_external_tenant_id_names_the_tenant(
+        self,
+    ) -> None:
+        signing_key = FederationSigningKey.generate()
+        client, transport = self.build_client(
+            {"/v1/federation/token": httpx.Response(200, json=SESSION_BODY)},
+            token_issuer=SubjectTokenIssuer(
+                signing_key=signing_key,
+                issuer="https://portal.acme.example",
+                audience="ai-ecosystem",
+            ),
+        )
+
+        client.federated_login(
+            subject="acme-user-1",
+            email="user@customer.example",
+            tenant=TenantProfile(name="Acme Ltd", external_tenant_id="acme-tenant-1"),
+        )
+
+        form = parse_qs(transport.request_to("/v1/federation/token").content.decode())
+        claims = jwt.decode(
+            form["subject_token"][0],
+            jwt.PyJWK(signing_key.public_jwk(), algorithm="RS256").key,
+            algorithms=["RS256"],
+            audience="ai-ecosystem",
+            issuer="https://portal.acme.example",
+        )
+        self.assertEqual(claims["tenant_id"], "acme-tenant-1")
+        self.assertEqual(claims["tenant_profile"], {"name": "Acme Ltd"})
+
     def test_a_tenant_the_platform_could_not_create_refuses_the_login(self) -> None:
         client, _ = self.build_client(
             {

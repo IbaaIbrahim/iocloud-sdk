@@ -81,7 +81,11 @@ export interface IssueSubjectTokenInput {
    * person's account.
    */
   subject: string;
-  externalTenantId: string;
+  /**
+   * The tenant claim. May be left out when `tenant` carries one, and must
+   * equal it when both are given.
+   */
+  externalTenantId?: string;
   email?: string;
   name?: string;
   emailVerified?: boolean;
@@ -286,14 +290,11 @@ export class SubjectTokenIssuer {
     if (!input.subject?.trim()) {
       throw new IOCloudFederationError("subject must not be empty");
     }
-    if (!input.externalTenantId?.trim()) {
-      throw new IOCloudFederationError("externalTenantId must not be empty");
-    }
     if (input.tenant !== undefined) {
       requireTenantProfileValues(input.tenant);
     }
 
-    const claims = this.#standardClaims(input);
+    const claims = this.#standardClaims(input, tenantClaimValue(input));
     // Reserved claims stay under the issuer's control: a caller cannot widen
     // the audience, extend the lifetime, or sign an unchecked tenant profile
     // through extraClaims.
@@ -320,7 +321,10 @@ export class SubjectTokenIssuer {
     });
   }
 
-  #standardClaims(input: IssueSubjectTokenInput): Record<string, unknown> {
+  #standardClaims(
+    input: IssueSubjectTokenInput,
+    externalTenantId: string,
+  ): Record<string, unknown> {
     const issuedAt = Math.floor(Date.now() / 1000);
     const claims: Record<string, unknown> = {
       iss: this.#issuer,
@@ -332,7 +336,7 @@ export class SubjectTokenIssuer {
       // cannot be exchanged twice.
       jti: randomUUID(),
       [this.#claimNames.user]: input.subject,
-      [this.#claimNames.tenant]: input.externalTenantId,
+      [this.#claimNames.tenant]: externalTenantId,
     };
     if (input.email !== undefined) {
       claims[this.#claimNames.email] = input.email;
@@ -346,6 +350,8 @@ export class SubjectTokenIssuer {
       const profile: Record<string, string> = { name: input.tenant.name };
       const contactEmail = input.tenant.contactEmail ?? null;
       if (contactEmail !== null) profile.contact_email = contactEmail;
+      const planCode = input.tenant.planCode ?? null;
+      if (planCode !== null) profile.plan_code = planCode;
       claims[TENANT_PROFILE_CLAIM] = profile;
     }
     return claims;
@@ -354,17 +360,46 @@ export class SubjectTokenIssuer {
 
 /**
  * Refuse an empty profile value, the way an empty subject is refused. Only
- * emptiness is checked, and the contact email only when one is given: lengths
- * are the platform's to judge.
+ * emptiness is checked, and the optional values only when given: lengths are
+ * the platform's to judge.
  */
 function requireTenantProfileValues(tenant: TenantProfile): void {
   if (!tenant.name?.trim()) {
     throw new IOCloudFederationError("tenant.name must not be empty");
   }
-  const contactEmail = tenant.contactEmail ?? null;
-  if (contactEmail !== null && !contactEmail.trim()) {
-    throw new IOCloudFederationError("tenant.contactEmail must not be empty");
+  const optionalValues = {
+    contactEmail: tenant.contactEmail,
+    planCode: tenant.planCode,
+    externalTenantId: tenant.externalTenantId,
+  };
+  for (const [fieldName, value] of Object.entries(optionalValues)) {
+    if (value !== undefined && value !== null && !value.trim()) {
+      throw new IOCloudFederationError(`tenant.${fieldName} must not be empty`);
+    }
   }
+}
+
+/**
+ * The tenant claim's value: the login's `externalTenantId`, else its
+ * profile's. Given twice, it must be one id: the platform finds the tenant by
+ * the claim, and creates it under that id, whatever the profile said.
+ */
+function tenantClaimValue(input: IssueSubjectTokenInput): string {
+  const loginTenantId = input.externalTenantId ?? null;
+  const profileTenantId = input.tenant?.externalTenantId ?? null;
+  if (loginTenantId !== null && profileTenantId !== null && loginTenantId !== profileTenantId) {
+    throw new IOCloudFederationError("tenant.externalTenantId must equal externalTenantId");
+  }
+  const tenantId = loginTenantId ?? profileTenantId;
+  if (tenantId === null) {
+    throw new IOCloudFederationError(
+      "externalTenantId is required: pass it, or a tenant that carries it",
+    );
+  }
+  if (!tenantId.trim()) {
+    throw new IOCloudFederationError("externalTenantId must not be empty");
+  }
+  return tenantId;
 }
 
 /**

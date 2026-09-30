@@ -256,6 +256,42 @@ class SubjectTokenIssuerTests(unittest.TestCase):
 
         self.assertNotIn("plan_code", claims["tenant_profile"])
 
+    def test_a_profiles_external_tenant_id_is_the_tenant_claim_and_never_in_the_profile(
+        self,
+    ) -> None:
+        claims = self.decode(
+            self.issuer.issue(
+                subject="user-1",
+                tenant=TenantProfile(name="Acme Ltd", external_tenant_id="tenant-7"),
+            )
+        )
+
+        self.assertEqual(claims["tenant_id"], "tenant-7")
+        self.assertEqual(claims["tenant_profile"], {"name": "Acme Ltd"})
+
+    def test_a_login_and_its_profile_name_one_tenant(self) -> None:
+        profile = TenantProfile(name="Acme Ltd", external_tenant_id="tenant-7")
+
+        claims = self.decode(
+            self.issuer.issue(
+                subject="user-1", external_tenant_id="tenant-7", tenant=profile
+            )
+        )
+        self.assertEqual(claims["tenant_id"], "tenant-7")
+
+        with self.assertRaises(IOCloudFederationError) as raised:
+            self.issuer.issue(
+                subject="user-1", external_tenant_id="tenant-8", tenant=profile
+            )
+        self.assertIn("must equal external_tenant_id", str(raised.exception))
+
+    def test_a_login_names_its_tenant_itself_or_through_its_profile(self) -> None:
+        for tenant in (None, TenantProfile(name="Acme Ltd")):
+            with self.subTest(tenant=tenant):
+                with self.assertRaises(IOCloudFederationError) as raised:
+                    self.issuer.issue(subject="user-1", tenant=tenant)
+                self.assertIn("external_tenant_id is required", str(raised.exception))
+
     def test_no_tenant_profile_claim_is_signed_without_a_profile(self) -> None:
         claims = self.decode(
             self.issuer.issue(subject="user-1", external_tenant_id="tenant-1")
@@ -277,6 +313,15 @@ class SubjectTokenIssuerTests(unittest.TestCase):
         self.assertEqual(claims["org_id"], "org-1")
         self.assertEqual(claims["tenant_profile"], TENANT_PROFILE.to_claim())
 
+        from_profile = self.decode(
+            issuer.issue(
+                subject="user-1",
+                tenant=TenantProfile(name="Acme Ltd", external_tenant_id="org-2"),
+            )
+        )
+        self.assertEqual(from_profile["org_id"], "org-2")
+        self.assertNotIn("tenant_id", from_profile)
+
     def test_extra_claims_can_neither_set_nor_override_the_tenant_profile(self) -> None:
         smuggled = {"tenant_profile": {"name": "Other"}}
 
@@ -297,6 +342,7 @@ class SubjectTokenIssuerTests(unittest.TestCase):
             "name": TenantProfile(name=" ", contact_email="ops@acme.example"),
             "contact_email": TenantProfile(name="Acme Ltd", contact_email="  "),
             "plan_code": TenantProfile(name="Acme Ltd", plan_code="  "),
+            "external_tenant_id": TenantProfile(name="Acme Ltd", external_tenant_id=" "),
         }
         for blank_field, profile in blank_profiles.items():
             with self.subTest(field=blank_field):

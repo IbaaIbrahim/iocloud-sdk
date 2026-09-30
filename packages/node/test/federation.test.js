@@ -294,6 +294,82 @@ test("a tenant profile without a contact email is signed without one", () => {
   assert.deepEqual(claims.tenant_profile, { name: "Acme Ltd" });
 });
 
+test("a plan code is signed into the tenant profile", () => {
+  const issuer = tokenIssuer(FederationSigningKey.generate());
+
+  const { claims } = verifyWithJwks(
+    issuer.issue({
+      subject: "user-1",
+      externalTenantId: "tenant-1",
+      tenant: { ...TENANT_PROFILE, planCode: "Growth-2026" },
+    }),
+    issuer.jwks(),
+  );
+
+  assert.deepEqual(claims.tenant_profile, {
+    name: "Acme Ltd",
+    contact_email: "ops@acme.example",
+    plan_code: "Growth-2026",
+  });
+});
+
+test("a tenant profile without a plan code is signed without one", () => {
+  const issuer = tokenIssuer(FederationSigningKey.generate());
+
+  // Omitted and null alike.
+  for (const tenant of [TENANT_PROFILE, { ...TENANT_PROFILE, planCode: null }]) {
+    const { claims } = verifyWithJwks(
+      issuer.issue({ subject: "user-1", externalTenantId: "tenant-1", tenant }),
+      issuer.jwks(),
+    );
+
+    assert.ok(!("plan_code" in claims.tenant_profile));
+  }
+});
+
+test("a profile's externalTenantId is the tenant claim and never in the profile", () => {
+  const issuer = tokenIssuer(FederationSigningKey.generate());
+
+  const { claims } = verifyWithJwks(
+    issuer.issue({ subject: "user-1", tenant: { name: "Acme Ltd", externalTenantId: "tenant-7" } }),
+    issuer.jwks(),
+  );
+
+  assert.equal(claims.tenant_id, "tenant-7");
+  assert.deepEqual(claims.tenant_profile, { name: "Acme Ltd" });
+});
+
+test("a login and its profile name one tenant", () => {
+  const issuer = tokenIssuer(FederationSigningKey.generate());
+  const tenant = { name: "Acme Ltd", externalTenantId: "tenant-7" };
+
+  const { claims } = verifyWithJwks(
+    issuer.issue({ subject: "user-1", externalTenantId: "tenant-7", tenant }),
+    issuer.jwks(),
+  );
+  assert.equal(claims.tenant_id, "tenant-7");
+
+  assert.throws(
+    () => issuer.issue({ subject: "user-1", externalTenantId: "tenant-8", tenant }),
+    (error) =>
+      error instanceof IOCloudFederationError &&
+      error.message.includes("must equal externalTenantId"),
+  );
+});
+
+test("a login names its tenant itself or through its profile", () => {
+  const issuer = tokenIssuer(FederationSigningKey.generate());
+
+  for (const tenant of [undefined, { name: "Acme Ltd" }, { name: "Acme Ltd", externalTenantId: null }]) {
+    assert.throws(
+      () => issuer.issue({ subject: "user-1", tenant }),
+      (error) =>
+        error instanceof IOCloudFederationError &&
+        error.message.includes("externalTenantId is required"),
+    );
+  }
+});
+
 test("no tenant_profile claim is signed without a profile", () => {
   const issuer = tokenIssuer(FederationSigningKey.generate());
 
@@ -325,6 +401,13 @@ test("the claim mapping never renames the tenant profile", () => {
     name: "Acme Ltd",
     contact_email: "ops@acme.example",
   });
+
+  const { claims: fromProfile } = verifyWithJwks(
+    issuer.issue({ subject: "user-1", tenant: { name: "Acme Ltd", externalTenantId: "org-2" } }),
+    issuer.jwks(),
+  );
+  assert.equal(fromProfile.org_id, "org-2");
+  assert.ok(!("tenant_id" in fromProfile));
 });
 
 test("extra claims can neither set nor override the tenant profile", () => {
@@ -355,7 +438,7 @@ test("extra claims can neither set nor override the tenant profile", () => {
 test("blank tenant profile values are rejected at the boundary", () => {
   const issuer = tokenIssuer(FederationSigningKey.generate());
 
-  for (const blankField of ["name", "contactEmail"]) {
+  for (const blankField of ["name", "contactEmail", "planCode", "externalTenantId"]) {
     assert.throws(
       () =>
         issuer.issue({

@@ -14,9 +14,9 @@ use DateTimeZone;
  *
  * `tenantUuid` is the tenant the session belongs to, and `tenantCreated` is
  * true only for the login that created that tenant from a {@see TenantProfile}.
- * A new tenant has no plan and draws on the partner's credits uncapped, so
- * subscribe it when this is true. A platform that predates both sends neither:
- * null and false.
+ * Unless that profile named a plan by `planCode`, a new tenant has no plan and
+ * draws on the partner's credits uncapped, so subscribe it when this is true.
+ * A platform that predates both sends neither: null and false.
  */
 final readonly class FederatedSession
 {

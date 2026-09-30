@@ -71,18 +71,33 @@ export interface SubjectTokenClaimNames {
 /**
  * The tenant a federated login creates when it is that tenant's first.
  *
- * What `createTenant` takes, less the two ids the login already carries: the
- * tenant claim becomes the tenant's `externalId`, and the identity provider's
- * application is its application. The platform generates the slug from
- * `name`. It travels as the subject token's `tenant_profile` claim, which the
- * platform reads only when no tenant of that application has the external id
- * and the provider allows just-in-time tenants. It never updates a tenant that
- * exists.
+ * What `createTenant` takes, less the application, which is the identity
+ * provider's. The platform generates the slug from `name`. It travels as the
+ * subject token's `tenant_profile` claim, which the platform reads only when no
+ * tenant of that application has the external id and the provider allows
+ * just-in-time tenants. It never updates a tenant that exists.
+ *
+ * `externalTenantId` is the `externalId` `createTenant` takes: the
+ * organisation's id in your own system. The login sends it once, as the
+ * token's tenant claim, never inside `tenant_profile`, so `federatedLogin`
+ * needs no `externalTenantId` of its own when the profile carries one, and
+ * refuses one that differs.
+ *
+ * `planCode`, also optional, is the one addition: the `planCode` of one of the
+ * partner's {@link TenantPlan}s, matched exactly. The tenant is then created
+ * subscribed to that plan, monthly and active, as `subscribeTenant` leaves it
+ * by default, or not created at all: a code none of the partner's plans has
+ * refuses the login with `invalid_target`. Without one the new tenant has no
+ * plan.
  */
 export interface TenantProfile {
   name: string;
   /** Optional: omitted or `null`, the claim carries no `contact_email`. */
   contactEmail?: string | null;
+  /** Optional: omitted or `null`, the claim carries no `plan_code`. */
+  planCode?: string | null;
+  /** Optional: omitted or `null`, the login's own `externalTenantId` names the tenant. */
+  externalTenantId?: string | null;
 }
 
 /**
@@ -131,8 +146,9 @@ export interface FederatedSession {
   tenantUuid: string | null;
   /**
    * True only for the login that created its tenant from a {@link TenantProfile};
-   * false from a platform that omits it. A new tenant has no plan and draws on
-   * the partner's credits uncapped, so subscribe it when this is true.
+   * false from a platform that omits it. Unless that profile named a plan by
+   * `planCode`, a new tenant has no plan and draws on the partner's credits
+   * uncapped, so subscribe it when this is true.
    */
   tenantCreated: boolean;
 }
@@ -179,7 +195,11 @@ export interface CreateIdentityProviderInput {
 
 export interface FederatedLoginInput {
   subject: string;
-  externalTenantId: string;
+  /**
+   * The tenant claim. May be left out when `tenant` carries one, and must
+   * equal it when both are given.
+   */
+  externalTenantId?: string;
   email?: string;
   name?: string;
   emailVerified?: boolean;
@@ -249,6 +269,13 @@ export interface UpdateUserStatusInput {
 export interface TenantPlan {
   uuid: string;
   name: string;
+  /**
+   * The partner's own code for the plan, unique among its tenant plans and
+   * matched exactly: a {@link TenantProfile} names the plan its tenant is
+   * created on by it. Set in the Admin Dashboard or the partner plan API; null
+   * for a plan without one, and from a platform that predates plan codes.
+   */
+  planCode: string | null;
   monthlyPriceCents: number;
   yearlyPriceCents: number;
   tpm: number;

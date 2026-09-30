@@ -81,9 +81,15 @@ Activation is idempotent: calling it on an already-active subscription returns
 it unchanged with `provisioned` empty. `list_tenant_subscriptions()` returns
 every subscription across your tenants.
 
+Each plan also carries `plan_code`, your own code for it, set in the Admin
+Dashboard: unique among your tenant plans, matched exactly, and `None` for a
+plan without one. A login that creates its tenant can name a plan by it, and
+the tenant is created on that plan (see
+[Creating a tenant at its first login](#creating-a-tenant-at-its-first-login)).
+
 The Node and Laravel packages expose the same four calls
 (`listTenantPlans`, `subscribeTenant`, `activateTenantSubscription`,
-`listTenantSubscriptions`).
+`listTenantSubscriptions`), and the code as `planCode`.
 
 ## Selling top-ups
 
@@ -247,11 +253,13 @@ The Node and Laravel packages expose the same calls (`createUser`,
 
 Instead of creating each tenant before anyone logs into it, register the
 provider with `allow_jit_tenants` and pass the tenant's details to each login
-as a `TenantProfile` — the name and optional contact email `create_tenant` takes.
-The SDK signs them into the subject token as its `tenant_profile` claim. When
-no tenant of the provider's application has the token's tenant claim as its
-external id, the platform creates that tenant, active, with the claim as its
-external id, then creates the user just in time:
+as a `TenantProfile` — the external id, name and optional contact email
+`create_tenant` takes, plus an optional plan code, which `create_tenant` does
+not take. The SDK sends the external id as the token's tenant claim and signs
+the rest into it as its `tenant_profile` claim. When no tenant of
+the provider's application has the token's tenant claim as its external id,
+the platform creates that tenant, active, with the claim as its external id,
+then creates the user just in time:
 
 ```python
 from iocloud_sdk import TenantProfile
@@ -268,27 +276,59 @@ client.create_identity_provider(
 
 session = client.federated_login(
     subject="acme-user-1001",
-    external_tenant_id="acme-tenant-1",   # the new tenant's external id
     email="dana.okafor@acme.example",     # its user is created just in time
-    tenant=TenantProfile(name="Acme Ltd", contact_email="ops@acme.example"),
+    tenant=TenantProfile(
+        external_tenant_id="acme-tenant-1",  # the tenant claim: the new tenant's external id
+        name="Acme Ltd",
+        contact_email="ops@acme.example",
+    ),
 )
 if session.tenant_created:
-    # A new tenant has no plan, so it draws on your credits uncapped.
+    # Created without a plan_code, a new tenant has no plan, so it draws on
+    # your credits uncapped.
     client.subscribe_tenant(tenant_uuid=session.tenant_uuid, plan_uuid=plan.uuid)
+```
+
+Or name one of your tenant plans by its `plan_code`, and the tenant is created
+on that plan, with nothing to subscribe afterwards:
+
+```python
+session = client.federated_login(
+    subject="acme-user-1001",
+    email="dana.okafor@acme.example",
+    tenant=TenantProfile(
+        external_tenant_id="acme-tenant-1", name="Acme Ltd", plan_code="growth"
+    ),
+)
 ```
 
 - `allow_jit_tenants` requires `allow_jit_users`, because the users of a tenant
   created at login can only be created at login: the platform refuses one
   without the other with a `422`.
+- The profile's `external_tenant_id` is the login's tenant claim, sent once
+  and never inside `tenant_profile`, so `federated_login` needs no
+  `external_tenant_id` of its own. Pass both and they must be the same id: the
+  SDK refuses a mismatch before signing, since the platform finds and creates
+  the tenant by the claim alone.
+- With a `plan_code`, the tenant is created subscribed to your plan with that
+  code, on a monthly billing cycle and active at once, as `subscribe_tenant`
+  leaves it by default, with its cap and the cap of the login's user
+  provisioned from the plan. That happens in the same transaction as the
+  tenant, so the tenant exists on its plan or not at all. A code none of your
+  plans has refuses the login with `invalid_target` ("The token's tenant plan
+  does not exist.") and creates nothing.
 - The profile creates a tenant and never updates one. Once the tenant exists
-  the profile is ignored, so passing it on every login is harmless.
+  the profile is ignored, so passing it on every login is harmless, and its
+  `plan_code` never changes an existing tenant's plan.
 - `session.tenant_uuid` is the tenant the session belongs to, and
   `session.tenant_created` is true only for the login that created it. A
   platform that predates them sends neither: `None` and `False`.
 
-The Node and Laravel packages expose the same: `TenantProfile`, `tenant` on
-`federatedLogin`, `allowJitTenants` on `createIdentityProvider`, and
-`tenantUuid` / `tenantCreated` on `FederatedSession`.
+The Node and Laravel packages expose the same: `TenantProfile` (with
+`planCode` and `externalTenantId`), `tenant` on `federatedLogin`, whose own
+`externalTenantId` is then optional, `allowJitTenants` on
+`createIdentityProvider`, and `tenantUuid` / `tenantCreated` on
+`FederatedSession`.
 
 ## Local checks
 

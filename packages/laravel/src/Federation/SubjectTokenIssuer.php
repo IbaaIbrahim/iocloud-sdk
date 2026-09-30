@@ -99,13 +99,15 @@ final class SubjectTokenIssuer
      * hands over that person's account.
      *
      * `$tenant` describes the tenant to create if this is its first login, and
-     * is signed as the `tenant_profile` claim.
+     * is signed as the `tenant_profile` claim. `$externalTenantId` becomes the
+     * tenant claim; it may be left out when `$tenant` carries one, and must
+     * equal it when both are given.
      *
      * @param array<string, mixed> $extraClaims
      */
     public function issue(
         string $subject,
-        string $externalTenantId,
+        ?string $externalTenantId = null,
         ?string $email = null,
         ?string $name = null,
         bool $emailVerified = false,
@@ -115,16 +117,13 @@ final class SubjectTokenIssuer
         if (trim($subject) === '') {
             throw new IOCloudFederationException('subject must not be empty');
         }
-        if (trim($externalTenantId) === '') {
-            throw new IOCloudFederationException('externalTenantId must not be empty');
-        }
         if ($tenant !== null) {
             $this->assertTenantProfileValues($tenant);
         }
 
         $claims = $this->standardClaims(
             $subject,
-            $externalTenantId,
+            $this->tenantClaimValue($externalTenantId, $tenant),
             $email,
             $name,
             $emailVerified,
@@ -161,7 +160,7 @@ final class SubjectTokenIssuer
     /**
      * Refuse an empty profile value, the way an empty subject is refused.
      *
-     * Only emptiness is checked, and the contact email only when one is given:
+     * Only emptiness is checked, and the optional values only when given:
      * lengths are the platform's to judge.
      */
     private function assertTenantProfileValues(TenantProfile $tenant): void
@@ -169,9 +168,42 @@ final class SubjectTokenIssuer
         if (trim($tenant->name) === '') {
             throw new IOCloudFederationException('tenant.name must not be empty');
         }
-        if ($tenant->contactEmail !== null && trim($tenant->contactEmail) === '') {
-            throw new IOCloudFederationException('tenant.contactEmail must not be empty');
+        $optionalValues = [
+            'contactEmail' => $tenant->contactEmail,
+            'planCode' => $tenant->planCode,
+            'externalTenantId' => $tenant->externalTenantId,
+        ];
+        foreach ($optionalValues as $fieldName => $value) {
+            if ($value !== null && trim($value) === '') {
+                throw new IOCloudFederationException("tenant.{$fieldName} must not be empty");
+            }
         }
+    }
+
+    /**
+     * The tenant claim's value: the login's `$externalTenantId`, else its
+     * profile's.
+     *
+     * Given twice, it must be one id: the platform finds the tenant by the
+     * claim, and creates it under that id, whatever the profile said.
+     */
+    private function tenantClaimValue(?string $externalTenantId, ?TenantProfile $tenant): string
+    {
+        $profileTenantId = $tenant?->externalTenantId;
+        if ($externalTenantId !== null && $profileTenantId !== null && $externalTenantId !== $profileTenantId) {
+            throw new IOCloudFederationException('tenant.externalTenantId must equal externalTenantId');
+        }
+        $tenantId = $externalTenantId ?? $profileTenantId;
+        if ($tenantId === null) {
+            throw new IOCloudFederationException(
+                'externalTenantId is required: pass it, or a tenant that carries it'
+            );
+        }
+        if (trim($tenantId) === '') {
+            throw new IOCloudFederationException('externalTenantId must not be empty');
+        }
+
+        return $tenantId;
     }
 
     /** @return array<string, mixed> */

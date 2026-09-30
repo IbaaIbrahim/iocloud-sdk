@@ -36,18 +36,31 @@ may now be null (see Breaking); every new parameter is optional.
 
 - `createTenant`'s `contactEmail` is optional: omit it, or pass null, for a
   tenant with none, and it is left out of the request.
-- `TenantProfile` (`name`, and an optional `contactEmail`): what `createTenant`
-  takes, less the two ids the login already carries. The tenant claim becomes
-  the new tenant's external id, the identity provider's application is its
-  application, and the platform generates its slug the same way.
+- `TenantProfile` (`name`, and an optional `contactEmail`, `planCode` and
+  `externalTenantId`): what `createTenant` takes, less the application, which
+  is the identity provider's, plus the plan code, which `createTenant` does
+  not take (below). The tenant claim becomes the new tenant's external id, and
+  the platform generates its slug the same way.
+- `TenantProfile.externalTenantId` (`external_tenant_id` in Python) is the
+  `externalId` `createTenant` takes, so one description of the tenant serves
+  both calls. It is sent once, as the token's tenant claim, never inside
+  `tenant_profile`, so `federatedLogin` and `SubjectTokenIssuer.issue` make
+  their own `externalTenantId` optional: a login names its tenant there or in
+  its profile. Given in both, it must be the same id, or the issuer refuses
+  the login before signing, because the platform finds and creates the tenant
+  by the claim alone and would ignore a profile that said otherwise; given in
+  neither, it is refused too. Existing calls that pass `externalTenantId` keep
+  working unchanged, positional ones in Laravel included, where
+  `$externalTenantId` stays the second parameter and is the profile's fourth.
 - `federatedLogin` and `SubjectTokenIssuer.issue` take an optional trailing
   `tenant`, signed as the subject token's `tenant_profile` claim: the name,
-  plus `contact_email` when there is one. The claim's name is fixed, whatever
-  the claim-name mapping says, and `tenant_profile` joins the reserved claims,
-  so `extraClaims` can neither set nor override it: `tenant` is the only way
-  in. The issuer refuses an empty name, or an empty contact email when one is
-  given, before signing; lengths are the platform's to judge, and it answers a
-  malformed profile with `invalid_grant` when it needs it.
+  plus `contact_email` and `plan_code` when they are set. The claim's name is
+  fixed, whatever the claim-name mapping says, and `tenant_profile` joins the
+  reserved claims, so `extraClaims` can neither set nor override it: `tenant`
+  is the only way in. The issuer refuses an empty name, or an empty contact
+  email, plan code or external tenant id when one is given, before signing;
+  lengths are the platform's to judge, and it answers a malformed profile with
+  `invalid_grant` when it needs it.
 - `createIdentityProvider` takes an optional `allowJitTenants` (default false),
   and `IdentityProvider` carries it back. In Laravel it is the last parameter,
   after `$claimNames`, so a call that passes the arguments positionally keeps
@@ -68,11 +81,37 @@ may now be null (see Breaking); every new parameter is optional.
 - In the rare case the platform cannot create the tenant, it refuses the login
   with `invalid_target` ("The token's tenant could not be created."), surfaced
   as the package's token-exchange error.
-- A tenant created at login has no plan, so it draws on your credits uncapped.
-  When `tenantCreated` is true, subscribe it with `subscribeTenant`.
-- Documented the provider flag, the `tenant_profile` claim, the two new
-  exchange members, the generated slug and the optional contact email in
-  `openapi/iocloud.yaml`.
+- A tenant created at login has no plan, unless its profile names one by
+  `planCode` (below), so it draws on your credits uncapped. When
+  `tenantCreated` is true and the profile named no plan, subscribe it with
+  `subscribeTenant`.
+- Tenant plans carry an optional `planCode`: your own code for the plan, 1 to
+  100 characters, unique among your tenant plans and matched exactly, case
+  included. You set it on the plan in the Admin Dashboard, or with
+  `POST /v1/partner/plans/tenant` and
+  `PATCH /v1/partner/plans/tenant/{plan_uuid}`; the SDKs only read it.
+  `TenantPlan`, which `listTenantPlans` returns, gains `planCode` (`plan_code`
+  in Python): null for a plan without one, and from a platform that predates
+  plan codes. It is a defaulted last field in Python and a defaulted last
+  constructor parameter in Laravel, so code that builds a `TenantPlan` itself
+  keeps working.
+- `TenantProfile.planCode` names the plan a just-in-time tenant is created on.
+  In Laravel it is the third constructor parameter, after `$contactEmail`, so
+  a positional call keeps working. The login that creates the tenant
+  subscribes it to your tenant plan with that code, on a monthly billing cycle
+  and activated at once, as `subscribeTenant` does by default, and provisions
+  the tenant's cap and the login user's cap from the plan. The subscription is
+  written in the same transaction as the tenant, so the tenant exists with its
+  plan or not at all. A code that names none of your tenant plans refuses the
+  login with `invalid_target` ("The token's tenant plan does not exist."),
+  surfaced as the package's token-exchange error, and creates nothing; one
+  that is not a string of 1 to 100 characters makes the profile malformed
+  (`invalid_grant`). Like the rest of the profile, it is never read once the
+  tenant exists, so it never changes an existing tenant's plan.
+- Documented the provider flag, the `tenant_profile` claim and its
+  `plan_code`, a tenant plan's `plan_code`, the two new exchange members, the
+  `invalid_target` an unknown plan code causes, the generated slug and the
+  optional contact email in `openapi/iocloud.yaml`.
 
 ## 0.5.0 - 2026-09-30
 

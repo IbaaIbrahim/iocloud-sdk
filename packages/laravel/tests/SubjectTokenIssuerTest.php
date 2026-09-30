@@ -173,6 +173,78 @@ final class SubjectTokenIssuerTest extends PHPUnitTestCase
         $this->assertSame(['name' => 'Acme Ltd'], $claims['tenant_profile']);
     }
 
+    public function test_a_plan_code_is_signed_into_the_tenant_profile(): void
+    {
+        $claims = $this->claimsOf($this->issuer->issue(
+            subject: 'user-1',
+            externalTenantId: 'tenant-1',
+            tenant: new TenantProfile(
+                name: 'Acme Ltd',
+                contactEmail: 'ops@acme.example',
+                planCode: 'Growth-2026',
+            ),
+        ));
+
+        $this->assertSame(
+            ['name' => 'Acme Ltd', 'contact_email' => 'ops@acme.example', 'plan_code' => 'Growth-2026'],
+            $claims['tenant_profile'],
+        );
+    }
+
+    public function test_a_profile_without_a_plan_code_is_signed_without_one(): void
+    {
+        $claims = $this->claimsOf($this->issuer->issue(
+            subject: 'user-1',
+            externalTenantId: 'tenant-1',
+            tenant: new TenantProfile(name: 'Acme Ltd', planCode: null),
+        ));
+
+        $this->assertArrayNotHasKey('plan_code', $claims['tenant_profile']);
+    }
+
+    public function test_a_profiles_external_tenant_id_is_the_tenant_claim_and_never_in_the_profile(): void
+    {
+        $claims = $this->claimsOf($this->issuer->issue(
+            subject: 'user-1',
+            tenant: new TenantProfile(name: 'Acme Ltd', externalTenantId: 'tenant-7'),
+        ));
+
+        $this->assertSame('tenant-7', $claims['tenant_id']);
+        $this->assertSame(['name' => 'Acme Ltd'], $claims['tenant_profile']);
+    }
+
+    public function test_a_login_and_its_profile_name_one_tenant(): void
+    {
+        $tenant = new TenantProfile(name: 'Acme Ltd', externalTenantId: 'tenant-7');
+
+        $claims = $this->claimsOf(
+            $this->issuer->issue(subject: 'user-1', externalTenantId: 'tenant-7', tenant: $tenant)
+        );
+        $this->assertSame('tenant-7', $claims['tenant_id']);
+
+        $this->expectException(IOCloudFederationException::class);
+        $this->expectExceptionMessage('tenant.externalTenantId must equal externalTenantId');
+        $this->issuer->issue(subject: 'user-1', externalTenantId: 'tenant-8', tenant: $tenant);
+    }
+
+    #[DataProvider('tenantsNamingNoTenant')]
+    public function test_a_login_names_its_tenant_itself_or_through_its_profile(?TenantProfile $tenant): void
+    {
+        $this->expectException(IOCloudFederationException::class);
+        $this->expectExceptionMessage('externalTenantId is required');
+
+        $this->issuer->issue(subject: 'user-1', tenant: $tenant);
+    }
+
+    /** @return array<string, array{?TenantProfile}> */
+    public static function tenantsNamingNoTenant(): array
+    {
+        return [
+            'no profile' => [null],
+            'a profile without the id' => [new TenantProfile(name: 'Acme Ltd')],
+        ];
+    }
+
     public function test_no_tenant_profile_claim_is_signed_without_a_profile(): void
     {
         $claims = $this->claimsOf($this->issuer->issue('user-1', 'tenant-1'));
@@ -193,6 +265,16 @@ final class SubjectTokenIssuerTest extends PHPUnitTestCase
 
         $this->assertSame('org-1', $claims['org_id']);
         $this->assertSame(self::tenantProfile()->toClaim(), $claims['tenant_profile']);
+
+        $fromProfile = JwsVerifier::verify(
+            $issuer->issue(
+                subject: 'user-1',
+                tenant: new TenantProfile(name: 'Acme Ltd', externalTenantId: 'org-2'),
+            ),
+            $issuer->jwks(),
+        )['claims'];
+        $this->assertSame('org-2', $fromProfile['org_id']);
+        $this->assertArrayNotHasKey('tenant_id', $fromProfile);
     }
 
     #[DataProvider('typedTenantProfiles')]
@@ -235,6 +317,11 @@ final class SubjectTokenIssuerTest extends PHPUnitTestCase
         return [
             'name' => [new TenantProfile(name: ' ', contactEmail: 'ops@acme.example'), 'name'],
             'contactEmail' => [new TenantProfile(name: 'Acme Ltd', contactEmail: '  '), 'contactEmail'],
+            'planCode' => [new TenantProfile(name: 'Acme Ltd', planCode: '  '), 'planCode'],
+            'externalTenantId' => [
+                new TenantProfile(name: 'Acme Ltd', externalTenantId: ' '),
+                'externalTenantId',
+            ],
         ];
     }
 

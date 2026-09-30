@@ -15,6 +15,7 @@ const BASE_URL = "https://api.example.com";
 const APPLICATION_UUID = "11111111-1111-4111-8111-111111111111";
 const TENANT_UUID = "22222222-2222-4222-8222-222222222222";
 const TENANT_NOT_CREATED = "The token's tenant could not be created.";
+const TENANT_PLAN_MISSING = "The token's tenant plan does not exist.";
 const TENANT_PROFILE = {
   name: "Acme Ltd",
   contactEmail: "ops@acme.example",
@@ -476,6 +477,33 @@ test("federatedLogin passes the tenant profile into the token it exchanges", asy
   assert.equal(session.tenantCreated, true);
 });
 
+test("a tenant profile carrying the externalTenantId names the tenant", async () => {
+  const { fetch, requestTo } = recordingFetch({
+    "/v1/federation/token": () => Response.json(SESSION_BODY),
+  });
+  const client = new IOCloudClient({
+    baseUrl: BASE_URL,
+    fetch,
+    tokenIssuer: new SubjectTokenIssuer({
+      signingKey: FederationSigningKey.generate(),
+      issuer: "https://portal.acme.example",
+      audience: "ai-ecosystem",
+    }),
+  });
+
+  await client.federatedLogin({
+    subject: "acme-user-1",
+    email: "user@customer.example",
+    tenant: { name: "Acme Ltd", externalTenantId: "acme-tenant-1" },
+  });
+
+  const form = new URLSearchParams(requestTo("/v1/federation/token").body);
+  const [, encodedPayload] = form.get("subject_token").split(".");
+  const claims = JSON.parse(Buffer.from(encodedPayload, "base64url").toString());
+  assert.equal(claims.tenant_id, "acme-tenant-1");
+  assert.deepEqual(claims.tenant_profile, { name: "Acme Ltd" });
+});
+
 test("a tenant the platform could not create refuses the login", async () => {
   const { fetch } = recordingFetch({
     "/v1/federation/token": () =>
@@ -507,6 +535,43 @@ test("a tenant the platform could not create refuses the login", async () => {
       error.error === "invalid_target" &&
       error.errorDescription === TENANT_NOT_CREATED,
   );
+});
+
+test("a plan code no plan has refuses the login", async () => {
+  const { fetch, requestTo } = recordingFetch({
+    "/v1/federation/token": () =>
+      Response.json(
+        { error: "invalid_target", error_description: TENANT_PLAN_MISSING },
+        { status: 400 },
+      ),
+  });
+  const client = new IOCloudClient({
+    baseUrl: BASE_URL,
+    fetch,
+    tokenIssuer: new SubjectTokenIssuer({
+      signingKey: FederationSigningKey.generate(),
+      issuer: "https://portal.acme.example",
+      audience: "ai-ecosystem",
+    }),
+  });
+
+  await assert.rejects(
+    client.federatedLogin({
+      subject: "acme-user-1",
+      externalTenantId: "acme-tenant-1",
+      email: "user@customer.example",
+      tenant: { name: "Acme Ltd", planCode: "no-such-plan" },
+    }),
+    (error) =>
+      error instanceof IOCloudTokenExchangeError &&
+      error.statusCode === 400 &&
+      error.error === "invalid_target" &&
+      error.errorDescription === TENANT_PLAN_MISSING,
+  );
+  const form = new URLSearchParams(requestTo("/v1/federation/token").body);
+  const [, encodedPayload] = form.get("subject_token").split(".");
+  const claims = JSON.parse(Buffer.from(encodedPayload, "base64url").toString());
+  assert.equal(claims.tenant_profile.plan_code, "no-such-plan");
 });
 
 test("federatedLogin reports a missing issuer before touching the network", async () => {

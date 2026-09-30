@@ -700,6 +700,8 @@ function parseTenantPlan(payload: JsonObject): TenantPlan {
   return {
     uuid: string(payload.uuid),
     name: string(payload.name),
+    // Absent from a platform that predates plan codes.
+    planCode: nullableString(payload.plan_code),
     monthlyPriceCents: integer(payload.monthly_price_cents),
     yearlyPriceCents: integer(payload.yearly_price_cents),
     tpm: integer(payload.tpm),

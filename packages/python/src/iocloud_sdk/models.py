@@ -147,14 +147,19 @@ class SubjectTokenClaimNames:
 class TenantProfile:
     """The tenant a federated login creates when it is that tenant's first.
 
-    What :meth:`~iocloud_sdk.IOCloudClient.create_tenant` takes, less the two
-    ids the login already carries: the tenant claim becomes the tenant's
-    ``external_id``, and the identity provider's application is its
-    application. The platform generates the slug from ``name``, and
-    ``contact_email`` is optional. It travels as the subject token's
-    ``tenant_profile`` claim, which the platform reads only when no tenant of
-    that application has the external id and the provider allows just-in-time
-    tenants. It never updates a tenant that exists.
+    What :meth:`~iocloud_sdk.IOCloudClient.create_tenant` takes, less the
+    application, which is the identity provider's. The platform generates the
+    slug from ``name``, and ``contact_email`` is optional. It travels as the
+    subject token's ``tenant_profile`` claim, which the platform reads only
+    when no tenant of that application has the external id and the provider
+    allows just-in-time tenants. It never updates a tenant that exists.
+
+    ``external_tenant_id`` is the ``external_id`` ``create_tenant`` takes: the
+    organisation's id in your own system. The login sends it once, as the
+    token's tenant claim, never inside ``tenant_profile``, so
+    :meth:`~iocloud_sdk.IOCloudClient.federated_login` needs no
+    ``external_tenant_id`` of its own when the profile carries one, and refuses
+    one that differs.
 
     ``plan_code``, also optional, is the one addition: the
     :attr:`TenantPlan.plan_code` of one of the partner's tenant plans, matched
@@ -168,12 +173,14 @@ class TenantProfile:
     name: str
     contact_email: str | None = None
     plan_code: str | None = None
+    # Last, so a profile built positionally keeps its meaning.
+    external_tenant_id: str | None = None
 
     def to_claim(self) -> dict[str, str]:
         """The ``tenant_profile`` claim's value, keyed as the platform reads it.
 
         ``contact_email`` and ``plan_code`` are each left out when there is
-        none.
+        none. ``external_tenant_id`` is never in it: it is the tenant claim.
         """
         claim = {"name": self.name}
         if self.contact_email is not None:
