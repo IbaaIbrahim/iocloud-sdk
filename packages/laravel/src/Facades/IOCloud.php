@@ -14,7 +14,7 @@ use IOCloud\Laravel\IOCloudClient;
  * @method static array{keys: list<array<string, string>>} jwks()
  * @method static array{issuer: string, audience: string, jwks_url: string, kid: string} federationDetails()
  * @method static \IOCloud\Laravel\Data\FederatedSession exchangeSubjectToken(string $subjectToken)
- * @method static \IOCloud\Laravel\Data\FederatedSession federatedLogin(string $subject, ?string $externalTenantId = null, ?string $email = null, ?string $name = null, bool $emailVerified = false, array $extraClaims = [], ?\IOCloud\Laravel\Data\TenantProfile $tenant = null)
+ * @method static string federatedLogin(string $subject, ?string $externalTenantId = null, ?string $email = null, ?string $name = null, bool $emailVerified = false, array $extraClaims = [], ?\IOCloud\Laravel\Data\TenantProfile $tenant = null)
  * @method static \IOCloud\Laravel\Data\TenantCredential createTenantCredentials(string $tenantUuid, string $name = 'realestate-persona-sync')
  * @method static \IOCloud\Laravel\Data\TenantToken issueTenantToken(string $clientId, string $clientSecret, bool $forceRefresh = false)
  * @method static array<string, mixed> setUserPersona(string $userUuid, string $persona, string $tenantClientId, string $tenantClientSecret)

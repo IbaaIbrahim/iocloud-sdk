@@ -45,8 +45,8 @@ final class IOCloudClient
     private array $tenantTokens = [];
 
     /**
-     * `$tokenIssuer` is only needed for {@see federatedLogin()}; supply it and a
-     * partner's login controller becomes a single call.
+     * `$tokenIssuer` is only needed for {@see federatedLogin()}; supply it and the
+     * endpoint your frontend fetches its subject token from becomes a single call.
      *
      * The partner client credentials are checked when they are first used rather
      * than here: publishing a JWKS and exchanging a subject token need no partner
@@ -578,15 +578,19 @@ final class IOCloudClient
     }
 
     /**
-     * Sign a subject token for a logged-in partner user and exchange it.
+     * Sign the subject token for a logged-in partner user, and send nothing.
      *
-     * The whole partner-side login integration, in one call. Requires a
-     * `SubjectTokenIssuer` on the client.
+     * Return it to your frontend: the chat client fetches it from your backend
+     * and exchanges it at the platform's `/v1/federation/token` itself, so the
+     * platform session never passes through your backend. A backend that wants
+     * the session anyway passes the token to {@see exchangeSubjectToken()}.
+     * Requires a `SubjectTokenIssuer` on the client.
      *
      * `$tenant` is the tenant to create if this is its first login, on a
-     * provider that allows just-in-time tenants; the session's `tenantCreated`
-     * says whether this login created it. `$externalTenantId` may be left out
-     * when `$tenant` carries one, and must equal it when both are given.
+     * provider that allows just-in-time tenants; the exchange's
+     * `tenant_created` says whether that login created it. `$externalTenantId`
+     * may be left out when `$tenant` carries one, and must equal it when both
+     * are given.
      *
      * @param array<string, mixed> $extraClaims
      */
@@ -598,8 +602,8 @@ final class IOCloudClient
         bool $emailVerified = false,
         array $extraClaims = [],
         ?TenantProfile $tenant = null,
-    ): FederatedSession {
-        return $this->exchangeSubjectToken($this->requireTokenIssuer('federatedLogin')->issue(
+    ): string {
+        return $this->requireTokenIssuer('federatedLogin')->issue(
             subject: $subject,
             externalTenantId: $externalTenantId,
             email: $email,
@@ -607,7 +611,7 @@ final class IOCloudClient
             emailVerified: $emailVerified,
             extraClaims: $extraClaims,
             tenant: $tenant,
-        ));
+        );
     }
 
     public function createTenantCredentials(

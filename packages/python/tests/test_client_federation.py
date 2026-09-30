@@ -435,8 +435,10 @@ class PublishJwksTests(ClientFederationTestCase):
         )
 
         self.assertEqual(client.jwks(), signing_key.jwks())
-        session = client.federated_login(
-            subject="acme-user-1", external_tenant_id="acme-tenant-1"
+        session = client.exchange_subject_token(
+            subject_token=client.federated_login(
+                subject="acme-user-1", external_tenant_id="acme-tenant-1"
+            )
         )
         self.assertEqual(session.access_token, "platform-session-token")
 
@@ -444,20 +446,36 @@ class PublishJwksTests(ClientFederationTestCase):
             client.issue_partner_token()
 
 
-class FederatedLoginTests(ClientFederationTestCase):
-    def test_it_signs_and_exchanges_in_one_call(self) -> None:
-        signing_key = FederationSigningKey.generate()
-        issuer = SubjectTokenIssuer(
-            signing_key=signing_key,
-            issuer="https://portal.acme.example",
-            audience="ai-ecosystem",
-        )
-        client, transport = self.build_client(
-            {"/v1/federation/token": httpx.Response(200, json=SESSION_BODY)},
-            token_issuer=issuer,
-        )
+def _claims_of(subject_token: str, signing_key: FederationSigningKey) -> dict:
+    """A token's claims, verified the way the platform verifies them."""
+    return jwt.decode(
+        subject_token,
+        jwt.PyJWK(signing_key.public_jwk(), algorithm="RS256").key,
+        algorithms=["RS256"],
+        audience="ai-ecosystem",
+        issuer="https://portal.acme.example",
+    )
 
-        session = client.federated_login(
+
+class FederatedLoginTests(ClientFederationTestCase):
+    def signing_client(
+        self, routes: dict[str, httpx.Response] | None = None
+    ) -> tuple[IOCloudClient, RecordingTransport, FederationSigningKey]:
+        signing_key = FederationSigningKey.generate()
+        client, transport = self.build_client(
+            routes or {},
+            token_issuer=SubjectTokenIssuer(
+                signing_key=signing_key,
+                issuer="https://portal.acme.example",
+                audience="ai-ecosystem",
+            ),
+        )
+        return client, transport, signing_key
+
+    def test_it_returns_the_signed_subject_token_and_sends_nothing(self) -> None:
+        client, transport, signing_key = self.signing_client()
+
+        subject_token = client.federated_login(
             subject="acme-user-1",
             external_tenant_id="acme-tenant-1",
             email="user@customer.example",
@@ -465,95 +483,71 @@ class FederatedLoginTests(ClientFederationTestCase):
             email_verified=True,
         )
 
-        form = parse_qs(transport.request_to("/v1/federation/token").content.decode())
-        claims = jwt.decode(
-            form["subject_token"][0],
-            jwt.PyJWK(signing_key.public_jwk(), algorithm="RS256").key,
-            algorithms=["RS256"],
-            audience="ai-ecosystem",
-            issuer="https://portal.acme.example",
-        )
+        claims = _claims_of(subject_token, signing_key)
         self.assertEqual(claims["sub"], "acme-user-1")
         self.assertEqual(claims["tenant_id"], "acme-tenant-1")
         self.assertTrue(claims["email_verified"])
         self.assertNotIn("tenant_profile", claims)
-        self.assertEqual(session.access_token, "platform-session-token")
+        self.assertEqual(transport.requests, [], "the frontend exchanges it, not the SDK")
 
-    def test_it_passes_the_tenant_profile_into_the_token_it_exchanges(self) -> None:
-        signing_key = FederationSigningKey.generate()
-        client, transport = self.build_client(
-            {
-                "/v1/federation/token": httpx.Response(
-                    200,
-                    json={
-                        **SESSION_BODY,
-                        "tenant_uuid": TENANT_UUID,
-                        "tenant_created": True,
-                    },
-                )
-            },
-            token_issuer=SubjectTokenIssuer(
-                signing_key=signing_key,
-                issuer="https://portal.acme.example",
-                audience="ai-ecosystem",
-            ),
-        )
+    def test_the_tenant_profile_is_signed_into_the_token(self) -> None:
+        client, _, signing_key = self.signing_client()
 
-        session = client.federated_login(
+        subject_token = client.federated_login(
             subject="acme-user-1",
             external_tenant_id="acme-tenant-1",
             email="user@customer.example",
             tenant=TenantProfile(name="Acme Ltd", contact_email="ops@acme.example"),
         )
 
-        form = parse_qs(transport.request_to("/v1/federation/token").content.decode())
-        claims = jwt.decode(
-            form["subject_token"][0],
-            jwt.PyJWK(signing_key.public_jwk(), algorithm="RS256").key,
-            algorithms=["RS256"],
-            audience="ai-ecosystem",
-            issuer="https://portal.acme.example",
-        )
+        claims = _claims_of(subject_token, signing_key)
         self.assertEqual(claims["tenant_id"], "acme-tenant-1")
         self.assertEqual(
             claims["tenant_profile"],
             {"name": "Acme Ltd", "contact_email": "ops@acme.example"},
         )
-        self.assertEqual(str(session.tenant_uuid), TENANT_UUID)
-        self.assertIs(session.tenant_created, True)
 
     def test_a_tenant_profile_carrying_the_external_tenant_id_names_the_tenant(
         self,
     ) -> None:
-        signing_key = FederationSigningKey.generate()
-        client, transport = self.build_client(
-            {"/v1/federation/token": httpx.Response(200, json=SESSION_BODY)},
-            token_issuer=SubjectTokenIssuer(
-                signing_key=signing_key,
-                issuer="https://portal.acme.example",
-                audience="ai-ecosystem",
-            ),
-        )
+        client, _, signing_key = self.signing_client()
 
-        client.federated_login(
+        subject_token = client.federated_login(
             subject="acme-user-1",
             email="user@customer.example",
             tenant=TenantProfile(name="Acme Ltd", external_tenant_id="acme-tenant-1"),
         )
 
-        form = parse_qs(transport.request_to("/v1/federation/token").content.decode())
-        claims = jwt.decode(
-            form["subject_token"][0],
-            jwt.PyJWK(signing_key.public_jwk(), algorithm="RS256").key,
-            algorithms=["RS256"],
-            audience="ai-ecosystem",
-            issuer="https://portal.acme.example",
-        )
+        claims = _claims_of(subject_token, signing_key)
         self.assertEqual(claims["tenant_id"], "acme-tenant-1")
         self.assertEqual(claims["tenant_profile"], {"name": "Acme Ltd"})
 
-    def test_a_tenant_the_platform_could_not_create_refuses_the_login(self) -> None:
-        client, _ = self.build_client(
+    def test_a_backend_that_wants_the_session_exchanges_the_token_itself(self) -> None:
+        client, transport, _ = self.signing_client(
+            {
+                "/v1/federation/token": httpx.Response(
+                    200,
+                    json={**SESSION_BODY, "tenant_uuid": TENANT_UUID, "tenant_created": True},
+                )
+            }
+        )
+
+        subject_token = client.federated_login(
+            subject="acme-user-1",
+            external_tenant_id="acme-tenant-1",
+            email="user@customer.example",
+            tenant=TenantProfile(name="Acme Ltd"),
+        )
+        session = client.exchange_subject_token(subject_token=subject_token)
+
+        form = parse_qs(transport.request_to("/v1/federation/token").content.decode())
+        self.assertEqual(form["subject_token"][0], subject_token)
+        self.assertEqual(session.access_token, "platform-session-token")
+        self.assertEqual(str(session.tenant_uuid), TENANT_UUID)
+        self.assertIs(session.tenant_created, True)
+
+    def test_a_tenant_the_platform_could_not_create_refuses_the_exchange(self) -> None:
+        client, _, _ = self.signing_client(
             {
                 "/v1/federation/token": httpx.Response(
                     400,
@@ -562,29 +556,24 @@ class FederatedLoginTests(ClientFederationTestCase):
                         "error_description": TENANT_NOT_CREATED,
                     },
                 )
-            },
-            token_issuer=SubjectTokenIssuer(
-                signing_key=FederationSigningKey.generate(),
-                issuer="https://portal.acme.example",
-                audience="ai-ecosystem",
-            ),
+            }
+        )
+        subject_token = client.federated_login(
+            subject="acme-user-1",
+            external_tenant_id="acme-tenant-1",
+            email="user@customer.example",
+            tenant=TenantProfile(name="Acme Ltd"),
         )
 
         with self.assertRaises(IOCloudTokenExchangeError) as raised:
-            client.federated_login(
-                subject="acme-user-1",
-                external_tenant_id="acme-tenant-1",
-                email="user@customer.example",
-                tenant=TenantProfile(name="Acme Ltd"),
-            )
+            client.exchange_subject_token(subject_token=subject_token)
 
         self.assertEqual(raised.exception.status_code, 400)
         self.assertEqual(raised.exception.error, "invalid_target")
         self.assertEqual(raised.exception.error_description, TENANT_NOT_CREATED)
 
-    def test_a_plan_code_no_plan_has_refuses_the_login(self) -> None:
-        signing_key = FederationSigningKey.generate()
-        client, transport = self.build_client(
+    def test_a_plan_code_no_plan_has_refuses_the_exchange(self) -> None:
+        client, _, signing_key = self.signing_client(
             {
                 "/v1/federation/token": httpx.Response(
                     400,
@@ -593,31 +582,22 @@ class FederatedLoginTests(ClientFederationTestCase):
                         "error_description": TENANT_PLAN_MISSING,
                     },
                 )
-            },
-            token_issuer=SubjectTokenIssuer(
-                signing_key=signing_key,
-                issuer="https://portal.acme.example",
-                audience="ai-ecosystem",
-            ),
+            }
+        )
+        subject_token = client.federated_login(
+            subject="acme-user-1",
+            external_tenant_id="acme-tenant-1",
+            email="user@customer.example",
+            tenant=TenantProfile(name="Acme Ltd", plan_code="no-such-plan"),
+        )
+        self.assertEqual(
+            _claims_of(subject_token, signing_key)["tenant_profile"]["plan_code"],
+            "no-such-plan",
         )
 
         with self.assertRaises(IOCloudTokenExchangeError) as raised:
-            client.federated_login(
-                subject="acme-user-1",
-                external_tenant_id="acme-tenant-1",
-                email="user@customer.example",
-                tenant=TenantProfile(name="Acme Ltd", plan_code="no-such-plan"),
-            )
+            client.exchange_subject_token(subject_token=subject_token)
 
-        form = parse_qs(transport.request_to("/v1/federation/token").content.decode())
-        claims = jwt.decode(
-            form["subject_token"][0],
-            jwt.PyJWK(signing_key.public_jwk(), algorithm="RS256").key,
-            algorithms=["RS256"],
-            audience="ai-ecosystem",
-            issuer="https://portal.acme.example",
-        )
-        self.assertEqual(claims["tenant_profile"]["plan_code"], "no-such-plan")
         self.assertEqual(raised.exception.status_code, 400)
         self.assertEqual(raised.exception.error, "invalid_target")
         self.assertEqual(raised.exception.error_description, TENANT_PLAN_MISSING)
@@ -629,7 +609,6 @@ class FederatedLoginTests(ClientFederationTestCase):
             client.federated_login(subject="user-1", external_tenant_id="tenant-1")
 
         self.assertEqual(transport.requests, [])
-
 
 if __name__ == "__main__":
     unittest.main()

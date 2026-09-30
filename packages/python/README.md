@@ -192,31 +192,56 @@ registration and the tokens you sign from drifting apart.
 `allow_jit_tenants=True` as well to create tenants at their first login
 (see below).
 
-### Log a user in
+### Give your frontend a subject token
+
+Your frontend's chat client asks your backend for a subject token, through the
+callback you pass it, and exchanges the token with IOCloud itself. The endpoint
+it calls sits behind your own login and returns what this call signs:
 
 ```python
-session = client.federated_login(
+subject_token = client.federated_login(
     subject=user.id,                 # stable and never reused
     external_tenant_id=user.tenant_id,
     email=user.email,
     name=user.name,
     email_verified=True,
 )
-
-session.access_token   # opaque platform token — Authorization: Bearer …
-session.user_uuid      # the IOCloud user this session belongs to
-session.tenant_uuid    # and its tenant
-session.expires_at     # no refresh tokens; sign and exchange again
+# Respond with {"subject_token": subject_token}.
 ```
 
-One call signs the subject token and exchanges it. Use
-`exchange_subject_token(subject_token=...)` if the token was signed elsewhere.
+`federated_login` signs the subject token with your private key and returns it;
+it sends nothing. The chat client exchanges it (RFC 8693):
+
+```js
+const response = await fetch(`${iocloudBaseUrl}/v1/federation/token`, {
+  method: "POST",
+  body: new URLSearchParams({
+    grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
+    subject_token: subjectToken,
+    subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
+  }),
+});
+const session = await response.json();
+session.access_token;   // opaque platform token — Authorization: Bearer …
+session.user_uuid;      // the IOCloud user this session belongs to
+session.tenant_uuid;    // and its tenant
+session.expires_in;     // no refresh tokens: fetch a new subject token and exchange it
+```
+
+The platform session never passes through your backend. A subject token is
+short-lived and exchanged once, so the chat client asks your endpoint for a new
+one each time it needs a session rather than keeping one. A backend that wants
+the session itself calls `exchange_subject_token(subject_token=...)`, which
+returns it as a `FederatedSession`; that is also how to exchange a token
+signed elsewhere.
 
 `subject` is the identity key IOCloud stores — the user's `external_id` within
 its tenant. It must be stable across logins and never reused for a different
 person — an email change at your end must not change it.
 
-A rejected exchange raises `IOCloudTokenExchangeError` with the RFC 6749 body:
+A rejected exchange answers `400` with an RFC 6749 body, `error` and
+`error_description`; `exchange_subject_token` raises it as
+`IOCloudTokenExchangeError`:
 
 | `error` | Cause |
 | --- | --- |
@@ -254,7 +279,9 @@ client.update_user_status(
     tenant_client_secret=credential.client_secret,
 )
 
-client.federated_login(subject="acme-user-1001", external_tenant_id="acme-tenant-1")
+subject_token = client.federated_login(
+    subject="acme-user-1001", external_tenant_id="acme-tenant-1"
+)
 ```
 
 An `external_id` another user of the tenant already holds is refused with
@@ -274,7 +301,7 @@ just in time in it, so the login needs `email`:
 ```python
 from iocloud_sdk import TenantProfile
 
-session = client.federated_login(
+subject_token = client.federated_login(
     subject="acme-user-1001",
     email="dana.okafor@acme.example",
     tenant=TenantProfile(
@@ -283,18 +310,16 @@ session = client.federated_login(
         contact_email="ops@acme.example",
     ),
 )
-
-if session.tenant_created:
-    # Created without a plan_code, a new tenant has no plan, so it draws on
-    # your credits uncapped.
-    client.subscribe_tenant(tenant_uuid=session.tenant_uuid, plan_uuid=plan.uuid)
 ```
 
-Or name one of your tenant plans by its code, and the login creates the tenant
-on that plan, with nothing to subscribe afterwards:
+A tenant created without a plan has none, so it draws on your credits uncapped
+until you subscribe it with `subscribe_tenant`. The exchange that creates it
+answers `tenant_created: true`, but your chat client receives that answer, not
+your backend. So name one of your tenant plans by its code instead, and the
+login creates the tenant on that plan, with nothing to subscribe afterwards:
 
 ```python
-session = client.federated_login(
+subject_token = client.federated_login(
     subject="acme-user-1001",
     email="dana.okafor@acme.example",
     tenant=TenantProfile(
@@ -327,9 +352,10 @@ contact email, plan code or external tenant id when one is given, with
 before signing; the platform judges the rest and answers a malformed profile
 with `invalid_grant`.
 
-`tenant_created` is true only for the login that created the tenant. A
-platform that predates just-in-time tenants sends neither session member, so
-`tenant_uuid` reads as `None` and `tenant_created` as `False` — and a provider's
+The exchange's `tenant_created` is true only for the login that created the
+tenant; `exchange_subject_token` reads it as `session.tenant_created`. A
+platform that predates just-in-time tenants sends neither `tenant_uuid` nor
+`tenant_created`, so they read as `None` and `False` — and a provider's
 `allow_jit_tenants` as `False`.
 
 ### Rotating keys

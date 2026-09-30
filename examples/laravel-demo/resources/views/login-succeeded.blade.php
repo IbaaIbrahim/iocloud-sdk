@@ -11,33 +11,37 @@
 
     <table>
         <tbody>
-        <tr>
-            <th>Platform user</th>
-            <td><code class="wrap">{{ $session->userUuid }}</code></td>
-        </tr>
-        <tr>
-            <th>Name / email on the platform</th>
-            <td>{{ $session->name }} &lt;{{ $session->email }}&gt;</td>
-        </tr>
-        <tr>
-            <th>Token type</th>
-            <td><code>{{ $session->tokenType }}</code></td>
-        </tr>
-        <tr>
-            <th>Issued token type</th>
-            <td><code class="wrap">{{ $session->issuedTokenType }}</code></td>
-        </tr>
-        <tr>
-            <th>Expires</th>
-            <td>
-                in {{ $session->expiresIn }}s
-                <span class="muted">({{ $session->expiresAt->format(DATE_ATOM) }})</span>
-            </td>
-        </tr>
-        <tr>
-            <th>Access token</th>
-            <td><code class="wrap">{{ $session->accessToken }}</code></td>
-        </tr>
+            {{-- <tr>
+                <th>Platform user</th>
+                <td><code class="wrap">{{ $session->userUuid }}</code></td>
+            </tr>
+            <tr>
+                <th>Name / email on the platform</th>
+                <td>{{ $session->name }} &lt;{{ $session->email }}&gt;</td>
+            </tr>
+            <tr>
+                <th>Token type</th>
+                <td><code>{{ $session->tokenType }}</code></td>
+            </tr>
+            <tr>
+                <th>Issued token type</th>
+                <td><code class="wrap">{{ $session->issuedTokenType }}</code></td>
+            </tr>
+            <tr>
+                <th>Expires</th>
+                <td>
+                    in {{ $session->expiresIn }}s
+                    <span class="muted">({{ $session->expiresAt->format(DATE_ATOM) }})</span>
+                </td>
+            </tr>
+            <tr>
+                <th>Access token</th>
+                <td><code class="wrap">{{ $session->accessToken }}</code></td>
+            </tr> --}}
+            <tr>
+                <th>Access token</th>
+                <td><code class="wrap">{{ $session }}</code></td>
+            </tr>
         </tbody>
     </table>
 

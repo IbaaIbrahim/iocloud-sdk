@@ -33,10 +33,12 @@ final readonly class PartnerFederation
     /**
      * Log a portal user into IOCloud and return the platform session.
      *
-     * One SDK call: it mints a subject token signed with this portal's key, then
-     * exchanges it for the platform's opaque access token.
+     * `federatedLogin()` mints a subject token signed with this portal's key. A
+     * real portal returns that token to its frontend, whose chat client
+     * exchanges it itself; the demo exchanges it here, so both halves show on
+     * one page.
      */
-    public function logIn(DemoUser $user): FederatedSession
+    public function logIn(DemoUser $user)
     {
         return $this->iocloud->federatedLogin(
             subject: $user->subject,

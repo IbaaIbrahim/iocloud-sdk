@@ -112,8 +112,8 @@ final class JwksRouteTest extends TestCase
 
     public function test_the_resolved_client_can_federate_when_federation_is_configured(): void
     {
-        // Reaching the HTTP layer proves an issuer was wired in; without one the
-        // client refuses before sending anything.
+        // Signing proves an issuer was wired in, and the exchange that it
+        // verifies; without one the client refuses before signing anything.
         Http::fake([
             'api.example.com/v1/federation/token' => Http::response([
                 'access_token' => 'platform-session-token',
@@ -126,10 +126,11 @@ final class JwksRouteTest extends TestCase
             ]),
         ]);
 
-        $session = $this->app->make(IOCloudClient::class)->federatedLogin(
+        $client = $this->app->make(IOCloudClient::class);
+        $session = $client->exchangeSubjectToken($client->federatedLogin(
             subject: 'acme-user-1',
             externalTenantId: 'acme-tenant-1',
-        );
+        ));
 
         $this->assertSame('platform-session-token', $session->accessToken);
     }

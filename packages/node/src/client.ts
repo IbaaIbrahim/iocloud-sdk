@@ -65,8 +65,8 @@ export interface IOCloudClientOptions {
   timeoutMs?: number;
   fetch?: typeof globalThis.fetch;
   /**
-   * Only needed for {@link IOCloudClient.federatedLogin}; supply it and a
-   * partner's login handler becomes a single call.
+   * Only needed for {@link IOCloudClient.federatedLogin}; supply it and the
+   * endpoint your frontend fetches its subject token from becomes a single call.
    */
   tokenIssuer?: SubjectTokenIssuer;
 }
@@ -468,19 +468,20 @@ export class IOCloudClient {
   }
 
   /**
-   * Sign a subject token for a logged-in partner user and exchange it.
+   * Sign the subject token for a logged-in partner user, and send nothing.
    *
-   * The whole partner-side login integration, in one call. Requires
-   * `tokenIssuer` on the client options.
+   * Return it to your frontend: the chat client fetches it from your backend
+   * and exchanges it at the platform's `/v1/federation/token` itself, so the
+   * platform session never passes through your backend. A backend that wants
+   * the session anyway passes the token to {@link exchangeSubjectToken}.
+   * Requires `tokenIssuer` on the client options.
    *
    * `tenant` is the tenant to create if this is its first login, on a provider
-   * that allows just-in-time tenants; the session's `tenantCreated` says
-   * whether this login created it.
+   * that allows just-in-time tenants; the exchange's `tenant_created` says
+   * whether that login created it.
    */
-  async federatedLogin(input: FederatedLoginInput): Promise<FederatedSession> {
-    return this.exchangeSubjectToken(
-      this.#requireTokenIssuer("federatedLogin").issue(input),
-    );
+  federatedLogin(input: FederatedLoginInput): string {
+    return this.#requireTokenIssuer("federatedLogin").issue(input);
   }
 
   /**

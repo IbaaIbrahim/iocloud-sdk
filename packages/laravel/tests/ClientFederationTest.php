@@ -336,19 +336,12 @@ final class ClientFederationTest extends TestCase
         }
     }
 
-    public function test_federated_login_signs_and_exchanges_in_one_call(): void
+    public function test_federated_login_returns_the_signed_subject_token_and_sends_nothing(): void
     {
-        Http::fake([
-            'api.example.com/v1/federation/token' => Http::response(self::SESSION_BODY),
-        ]);
+        Http::fake();
         $signingKey = FederationSigningKey::generate();
-        $client = $this->client(new SubjectTokenIssuer(
-            signingKey: $signingKey,
-            issuer: 'https://portal.acme.example',
-            audience: 'ai-ecosystem',
-        ));
 
-        $session = $client->federatedLogin(
+        $subjectToken = $this->signingClient($signingKey)->federatedLogin(
             subject: 'acme-user-1',
             externalTenantId: 'acme-tenant-1',
             email: 'user@customer.example',
@@ -356,20 +349,51 @@ final class ClientFederationTest extends TestCase
             emailVerified: true,
         );
 
-        Http::assertSent(function (Request $request) use ($signingKey): bool {
-            parse_str($request->body(), $form);
-            $verified = JwsVerifier::verify($form['subject_token'], $signingKey->jwks());
-
-            return $verified['header']['kid'] === $signingKey->kid()
-                && $verified['claims']['sub'] === 'acme-user-1'
-                && $verified['claims']['tenant_id'] === 'acme-tenant-1'
-                && $verified['claims']['email_verified'] === true
-                && ! array_key_exists('tenant_profile', $verified['claims']);
-        });
-        $this->assertSame('platform-session-token', $session->accessToken);
+        $verified = JwsVerifier::verify($subjectToken, $signingKey->jwks());
+        $this->assertSame($signingKey->kid(), $verified['header']['kid']);
+        $this->assertSame('acme-user-1', $verified['claims']['sub']);
+        $this->assertSame('acme-tenant-1', $verified['claims']['tenant_id']);
+        $this->assertTrue($verified['claims']['email_verified']);
+        $this->assertArrayNotHasKey('tenant_profile', $verified['claims']);
+        // The frontend exchanges it, not the SDK.
+        Http::assertNothingSent();
     }
 
-    public function test_federated_login_passes_the_tenant_profile_into_the_token(): void
+    public function test_federated_login_signs_the_tenant_profile_into_the_token(): void
+    {
+        $signingKey = FederationSigningKey::generate();
+
+        $subjectToken = $this->signingClient($signingKey)->federatedLogin(
+            subject: 'acme-user-1',
+            externalTenantId: 'acme-tenant-1',
+            email: 'user@customer.example',
+            tenant: new TenantProfile(name: 'Acme Ltd', contactEmail: 'ops@acme.example'),
+        );
+
+        $claims = JwsVerifier::verify($subjectToken, $signingKey->jwks())['claims'];
+        $this->assertSame('acme-tenant-1', $claims['tenant_id']);
+        $this->assertSame(
+            ['name' => 'Acme Ltd', 'contact_email' => 'ops@acme.example'],
+            $claims['tenant_profile'],
+        );
+    }
+
+    public function test_a_tenant_profile_carrying_the_external_tenant_id_names_the_tenant(): void
+    {
+        $signingKey = FederationSigningKey::generate();
+
+        $subjectToken = $this->signingClient($signingKey)->federatedLogin(
+            subject: 'acme-user-1',
+            email: 'user@customer.example',
+            tenant: new TenantProfile(name: 'Acme Ltd', externalTenantId: 'acme-tenant-1'),
+        );
+
+        $claims = JwsVerifier::verify($subjectToken, $signingKey->jwks())['claims'];
+        $this->assertSame('acme-tenant-1', $claims['tenant_id']);
+        $this->assertSame(['name' => 'Acme Ltd'], $claims['tenant_profile']);
+    }
+
+    public function test_a_backend_that_wants_the_session_exchanges_the_token_itself(): void
     {
         Http::fake([
             'api.example.com/v1/federation/token' => Http::response([
@@ -378,60 +402,27 @@ final class ClientFederationTest extends TestCase
                 'tenant_created' => true,
             ]),
         ]);
-        $signingKey = FederationSigningKey::generate();
-        $client = $this->client(new SubjectTokenIssuer(
-            signingKey: $signingKey,
-            issuer: 'https://portal.acme.example',
-            audience: 'ai-ecosystem',
-        ));
+        $client = $this->signingClient(FederationSigningKey::generate());
 
-        $session = $client->federatedLogin(
+        $subjectToken = $client->federatedLogin(
             subject: 'acme-user-1',
             externalTenantId: 'acme-tenant-1',
             email: 'user@customer.example',
-            tenant: new TenantProfile(name: 'Acme Ltd', contactEmail: 'ops@acme.example'),
+            tenant: new TenantProfile(name: 'Acme Ltd'),
         );
+        $session = $client->exchangeSubjectToken($subjectToken);
 
-        Http::assertSent(function (Request $request) use ($signingKey): bool {
+        Http::assertSent(function (Request $request) use ($subjectToken): bool {
             parse_str($request->body(), $form);
-            $claims = JwsVerifier::verify($form['subject_token'], $signingKey->jwks())['claims'];
 
-            return $claims['tenant_id'] === 'acme-tenant-1'
-                && $claims['tenant_profile'] === [
-                    'name' => 'Acme Ltd',
-                    'contact_email' => 'ops@acme.example',
-                ];
+            return $form['subject_token'] === $subjectToken;
         });
+        $this->assertSame('platform-session-token', $session->accessToken);
         $this->assertSame(self::TENANT_UUID, $session->tenantUuid);
         $this->assertTrue($session->tenantCreated);
     }
 
-    public function test_a_tenant_profile_carrying_the_external_tenant_id_names_the_tenant(): void
-    {
-        Http::fake(['api.example.com/v1/federation/token' => Http::response(self::SESSION_BODY)]);
-        $signingKey = FederationSigningKey::generate();
-        $client = $this->client(new SubjectTokenIssuer(
-            signingKey: $signingKey,
-            issuer: 'https://portal.acme.example',
-            audience: 'ai-ecosystem',
-        ));
-
-        $client->federatedLogin(
-            subject: 'acme-user-1',
-            email: 'user@customer.example',
-            tenant: new TenantProfile(name: 'Acme Ltd', externalTenantId: 'acme-tenant-1'),
-        );
-
-        Http::assertSent(function (Request $request) use ($signingKey): bool {
-            parse_str($request->body(), $form);
-            $claims = JwsVerifier::verify($form['subject_token'], $signingKey->jwks())['claims'];
-
-            return $claims['tenant_id'] === 'acme-tenant-1'
-                && $claims['tenant_profile'] === ['name' => 'Acme Ltd'];
-        });
-    }
-
-    public function test_a_tenant_the_platform_could_not_create_refuses_the_login(): void
+    public function test_a_tenant_the_platform_could_not_create_refuses_the_exchange(): void
     {
         Http::fake([
             'api.example.com/v1/federation/token' => Http::response([
@@ -439,19 +430,16 @@ final class ClientFederationTest extends TestCase
                 'error_description' => self::TENANT_NOT_CREATED,
             ], 400),
         ]);
-        $client = $this->client(new SubjectTokenIssuer(
-            signingKey: FederationSigningKey::generate(),
-            issuer: 'https://portal.acme.example',
-            audience: 'ai-ecosystem',
-        ));
+        $client = $this->signingClient(FederationSigningKey::generate());
+        $subjectToken = $client->federatedLogin(
+            subject: 'acme-user-1',
+            externalTenantId: 'acme-tenant-1',
+            email: 'user@customer.example',
+            tenant: new TenantProfile(name: 'Acme Ltd'),
+        );
 
         try {
-            $client->federatedLogin(
-                subject: 'acme-user-1',
-                externalTenantId: 'acme-tenant-1',
-                email: 'user@customer.example',
-                tenant: new TenantProfile(name: 'Acme Ltd'),
-            );
+            $client->exchangeSubjectToken($subjectToken);
             $this->fail('expected the exchange to be rejected');
         } catch (IOCloudTokenExchangeException $exception) {
             $this->assertSame(400, $exception->statusCode);
@@ -460,7 +448,7 @@ final class ClientFederationTest extends TestCase
         }
     }
 
-    public function test_a_plan_code_no_plan_has_refuses_the_login(): void
+    public function test_a_plan_code_no_plan_has_refuses_the_exchange(): void
     {
         Http::fake([
             'api.example.com/v1/federation/token' => Http::response([
@@ -469,31 +457,26 @@ final class ClientFederationTest extends TestCase
             ], 400),
         ]);
         $signingKey = FederationSigningKey::generate();
-        $client = $this->client(new SubjectTokenIssuer(
-            signingKey: $signingKey,
-            issuer: 'https://portal.acme.example',
-            audience: 'ai-ecosystem',
-        ));
+        $client = $this->signingClient($signingKey);
+        $subjectToken = $client->federatedLogin(
+            subject: 'acme-user-1',
+            externalTenantId: 'acme-tenant-1',
+            email: 'user@customer.example',
+            tenant: new TenantProfile(name: 'Acme Ltd', planCode: 'no-such-plan'),
+        );
+        $this->assertSame(
+            'no-such-plan',
+            JwsVerifier::verify($subjectToken, $signingKey->jwks())['claims']['tenant_profile']['plan_code'],
+        );
 
         try {
-            $client->federatedLogin(
-                subject: 'acme-user-1',
-                externalTenantId: 'acme-tenant-1',
-                email: 'user@customer.example',
-                tenant: new TenantProfile(name: 'Acme Ltd', planCode: 'no-such-plan'),
-            );
+            $client->exchangeSubjectToken($subjectToken);
             $this->fail('expected the exchange to be rejected');
         } catch (IOCloudTokenExchangeException $exception) {
             $this->assertSame(400, $exception->statusCode);
             $this->assertSame('invalid_target', $exception->error);
             $this->assertSame(self::TENANT_PLAN_MISSING, $exception->errorDescription);
         }
-        Http::assertSent(function (Request $request) use ($signingKey): bool {
-            parse_str($request->body(), $form);
-            $claims = JwsVerifier::verify($form['subject_token'], $signingKey->jwks())['claims'];
-
-            return $claims['tenant_profile']['plan_code'] === 'no-such-plan';
-        });
     }
 
     public function test_federated_login_reports_a_missing_issuer_before_any_request(): void
@@ -535,6 +518,15 @@ final class ClientFederationTest extends TestCase
         $token = $this->app->make(IOCloudClient::class)->issuePartnerToken();
 
         $this->assertSame('partner-token', $token->accessToken);
+    }
+
+    private function signingClient(FederationSigningKey $signingKey): IOCloudClient
+    {
+        return $this->client(new SubjectTokenIssuer(
+            signingKey: $signingKey,
+            issuer: 'https://portal.acme.example',
+            audience: 'ai-ecosystem',
+        ));
     }
 
     private function client(?SubjectTokenIssuer $tokenIssuer = null): IOCloudClient

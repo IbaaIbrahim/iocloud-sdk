@@ -393,33 +393,42 @@ test("publishing and exchanging need no partner credentials", async () => {
   });
 
   assert.deepEqual(client.jwks(), signingKey.jwks());
-  const session = await client.federatedLogin({
-    subject: "acme-user-1",
-    externalTenantId: "acme-tenant-1",
-  });
+  const session = await client.exchangeSubjectToken(
+    client.federatedLogin({ subject: "acme-user-1", externalTenantId: "acme-tenant-1" }),
+  );
   assert.equal(session.accessToken, "platform-session-token");
 
   await assert.rejects(client.issuePartnerToken(), TypeError);
 });
 
-test("federatedLogin signs and exchanges in one call", async () => {
+/** A token's header and claims, decoded; the issuer's own tests verify signatures. */
+function decodeSubjectToken(subjectToken) {
+  const [encodedHeader, encodedPayload] = subjectToken.split(".");
+  return {
+    header: JSON.parse(Buffer.from(encodedHeader, "base64url").toString()),
+    claims: JSON.parse(Buffer.from(encodedPayload, "base64url").toString()),
+  };
+}
+
+function signingClient(responses = {}) {
   const signingKey = FederationSigningKey.generate();
-  const { fetch, requestTo } = recordingFetch({
-    "/v1/federation/token": () => Response.json(SESSION_BODY),
-  });
+  const recorded = recordingFetch(responses);
   const client = new IOCloudClient({
-    clientId: "client-id",
-    clientSecret: "client-secret",
     baseUrl: BASE_URL,
-    fetch,
+    fetch: recorded.fetch,
     tokenIssuer: new SubjectTokenIssuer({
       signingKey,
       issuer: "https://portal.acme.example",
       audience: "ai-ecosystem",
     }),
   });
+  return { client, signingKey, ...recorded };
+}
 
-  const session = await client.federatedLogin({
+test("federatedLogin returns the signed subject token and sends nothing", () => {
+  const { client, signingKey, requests } = signingClient();
+
+  const subjectToken = client.federatedLogin({
     subject: "acme-user-1",
     externalTenantId: "acme-tenant-1",
     email: "user@customer.example",
@@ -427,108 +436,87 @@ test("federatedLogin signs and exchanges in one call", async () => {
     emailVerified: true,
   });
 
-  const form = new URLSearchParams(requestTo("/v1/federation/token").body);
-  const [encodedHeader, encodedPayload] = form.get("subject_token").split(".");
-  const header = JSON.parse(Buffer.from(encodedHeader, "base64url").toString());
-  const claims = JSON.parse(Buffer.from(encodedPayload, "base64url").toString());
+  const { header, claims } = decodeSubjectToken(subjectToken);
   assert.equal(header.kid, signingKey.kid);
   assert.equal(claims.sub, "acme-user-1");
   assert.equal(claims.tenant_id, "acme-tenant-1");
   assert.equal(claims.email_verified, true);
   assert.ok(!("tenant_profile" in claims));
-  assert.equal(session.accessToken, "platform-session-token");
+  assert.equal(requests.length, 0, "the frontend exchanges it, not the SDK");
 });
 
-test("federatedLogin passes the tenant profile into the token it exchanges", async () => {
-  const { fetch, requestTo } = recordingFetch({
-    "/v1/federation/token": () =>
-      Response.json({
-        ...SESSION_BODY,
-        tenant_uuid: TENANT_UUID,
-        tenant_created: true,
-      }),
-  });
-  const client = new IOCloudClient({
-    baseUrl: BASE_URL,
-    fetch,
-    tokenIssuer: new SubjectTokenIssuer({
-      signingKey: FederationSigningKey.generate(),
-      issuer: "https://portal.acme.example",
-      audience: "ai-ecosystem",
+test("federatedLogin signs the tenant profile into the token", () => {
+  const { client } = signingClient();
+
+  const { claims } = decodeSubjectToken(
+    client.federatedLogin({
+      subject: "acme-user-1",
+      externalTenantId: "acme-tenant-1",
+      email: "user@customer.example",
+      tenant: TENANT_PROFILE,
     }),
-  });
+  );
 
-  const session = await client.federatedLogin({
-    subject: "acme-user-1",
-    externalTenantId: "acme-tenant-1",
-    email: "user@customer.example",
-    tenant: TENANT_PROFILE,
-  });
-
-  const form = new URLSearchParams(requestTo("/v1/federation/token").body);
-  const [, encodedPayload] = form.get("subject_token").split(".");
-  const claims = JSON.parse(Buffer.from(encodedPayload, "base64url").toString());
   assert.equal(claims.tenant_id, "acme-tenant-1");
   assert.deepEqual(claims.tenant_profile, {
     name: "Acme Ltd",
     contact_email: "ops@acme.example",
   });
-  assert.equal(session.tenantUuid, TENANT_UUID);
-  assert.equal(session.tenantCreated, true);
 });
 
-test("a tenant profile carrying the externalTenantId names the tenant", async () => {
-  const { fetch, requestTo } = recordingFetch({
-    "/v1/federation/token": () => Response.json(SESSION_BODY),
-  });
-  const client = new IOCloudClient({
-    baseUrl: BASE_URL,
-    fetch,
-    tokenIssuer: new SubjectTokenIssuer({
-      signingKey: FederationSigningKey.generate(),
-      issuer: "https://portal.acme.example",
-      audience: "ai-ecosystem",
+test("a tenant profile carrying the externalTenantId names the tenant", () => {
+  const { client } = signingClient();
+
+  const { claims } = decodeSubjectToken(
+    client.federatedLogin({
+      subject: "acme-user-1",
+      email: "user@customer.example",
+      tenant: { name: "Acme Ltd", externalTenantId: "acme-tenant-1" },
     }),
-  });
+  );
 
-  await client.federatedLogin({
-    subject: "acme-user-1",
-    email: "user@customer.example",
-    tenant: { name: "Acme Ltd", externalTenantId: "acme-tenant-1" },
-  });
-
-  const form = new URLSearchParams(requestTo("/v1/federation/token").body);
-  const [, encodedPayload] = form.get("subject_token").split(".");
-  const claims = JSON.parse(Buffer.from(encodedPayload, "base64url").toString());
   assert.equal(claims.tenant_id, "acme-tenant-1");
   assert.deepEqual(claims.tenant_profile, { name: "Acme Ltd" });
 });
 
-test("a tenant the platform could not create refuses the login", async () => {
-  const { fetch } = recordingFetch({
+test("a backend that wants the session exchanges the token itself", async () => {
+  const { client, requestTo } = signingClient({
+    "/v1/federation/token": () =>
+      Response.json({ ...SESSION_BODY, tenant_uuid: TENANT_UUID, tenant_created: true }),
+  });
+
+  const subjectToken = client.federatedLogin({
+    subject: "acme-user-1",
+    externalTenantId: "acme-tenant-1",
+    email: "user@customer.example",
+    tenant: TENANT_PROFILE,
+  });
+  const session = await client.exchangeSubjectToken(subjectToken);
+
+  const form = new URLSearchParams(requestTo("/v1/federation/token").body);
+  assert.equal(form.get("subject_token"), subjectToken);
+  assert.equal(session.accessToken, "platform-session-token");
+  assert.equal(session.tenantUuid, TENANT_UUID);
+  assert.equal(session.tenantCreated, true);
+});
+
+test("a tenant the platform could not create refuses the exchange", async () => {
+  const { client } = signingClient({
     "/v1/federation/token": () =>
       Response.json(
         { error: "invalid_target", error_description: TENANT_NOT_CREATED },
         { status: 400 },
       ),
   });
-  const client = new IOCloudClient({
-    baseUrl: BASE_URL,
-    fetch,
-    tokenIssuer: new SubjectTokenIssuer({
-      signingKey: FederationSigningKey.generate(),
-      issuer: "https://portal.acme.example",
-      audience: "ai-ecosystem",
-    }),
+  const subjectToken = client.federatedLogin({
+    subject: "acme-user-1",
+    externalTenantId: "acme-tenant-1",
+    email: "user@customer.example",
+    tenant: { name: "Acme Ltd" },
   });
 
   await assert.rejects(
-    client.federatedLogin({
-      subject: "acme-user-1",
-      externalTenantId: "acme-tenant-1",
-      email: "user@customer.example",
-      tenant: { name: "Acme Ltd" },
-    }),
+    client.exchangeSubjectToken(subjectToken),
     (error) =>
       error instanceof IOCloudTokenExchangeError &&
       error.statusCode === 400 &&
@@ -537,44 +525,33 @@ test("a tenant the platform could not create refuses the login", async () => {
   );
 });
 
-test("a plan code no plan has refuses the login", async () => {
-  const { fetch, requestTo } = recordingFetch({
+test("a plan code no plan has refuses the exchange", async () => {
+  const { client } = signingClient({
     "/v1/federation/token": () =>
       Response.json(
         { error: "invalid_target", error_description: TENANT_PLAN_MISSING },
         { status: 400 },
       ),
   });
-  const client = new IOCloudClient({
-    baseUrl: BASE_URL,
-    fetch,
-    tokenIssuer: new SubjectTokenIssuer({
-      signingKey: FederationSigningKey.generate(),
-      issuer: "https://portal.acme.example",
-      audience: "ai-ecosystem",
-    }),
+  const subjectToken = client.federatedLogin({
+    subject: "acme-user-1",
+    externalTenantId: "acme-tenant-1",
+    email: "user@customer.example",
+    tenant: { name: "Acme Ltd", planCode: "no-such-plan" },
   });
+  assert.equal(decodeSubjectToken(subjectToken).claims.tenant_profile.plan_code, "no-such-plan");
 
   await assert.rejects(
-    client.federatedLogin({
-      subject: "acme-user-1",
-      externalTenantId: "acme-tenant-1",
-      email: "user@customer.example",
-      tenant: { name: "Acme Ltd", planCode: "no-such-plan" },
-    }),
+    client.exchangeSubjectToken(subjectToken),
     (error) =>
       error instanceof IOCloudTokenExchangeError &&
       error.statusCode === 400 &&
       error.error === "invalid_target" &&
       error.errorDescription === TENANT_PLAN_MISSING,
   );
-  const form = new URLSearchParams(requestTo("/v1/federation/token").body);
-  const [, encodedPayload] = form.get("subject_token").split(".");
-  const claims = JSON.parse(Buffer.from(encodedPayload, "base64url").toString());
-  assert.equal(claims.tenant_profile.plan_code, "no-such-plan");
 });
 
-test("federatedLogin reports a missing issuer before touching the network", async () => {
+test("federatedLogin reports a missing issuer before touching the network", () => {
   const { fetch, requests } = recordingFetch({});
   const client = new IOCloudClient({
     clientId: "client-id",
@@ -583,8 +560,8 @@ test("federatedLogin reports a missing issuer before touching the network", asyn
     fetch,
   });
 
-  await assert.rejects(
-    client.federatedLogin({ subject: "user-1", externalTenantId: "tenant-1" }),
+  assert.throws(
+    () => client.federatedLogin({ subject: "user-1", externalTenantId: "tenant-1" }),
     IOCloudFederationError,
   );
   assert.equal(requests.length, 0);

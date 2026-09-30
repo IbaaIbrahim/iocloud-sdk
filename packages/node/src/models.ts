@@ -206,7 +206,7 @@ export interface FederatedLoginInput {
   extraClaims?: Record<string, unknown>;
   /**
    * The tenant to create if this is its first login, on a provider that allows
-   * just-in-time tenants. The session's `tenantCreated` says whether this
+   * just-in-time tenants. The exchange's `tenant_created` says whether that
    * login created it.
    */
   tenant?: TenantProfile;

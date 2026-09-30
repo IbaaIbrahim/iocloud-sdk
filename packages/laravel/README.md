@@ -56,8 +56,9 @@ artisan command, a little configuration, and two one-line calls:
 // A route of your choosing publishes the public keys.
 Route::get('/.well-known/jwks.json', fn () => IOCloud::jwks());
 
-// Your login controller signs a token and exchanges it for a platform session.
-$session = IOCloud::federatedLogin(subject: $user->id, externalTenantId: $user->tenant_id);
+// The endpoint your frontend's chat client calls signs a subject token; the
+// chat client exchanges it with IOCloud itself.
+$subjectToken = IOCloud::federatedLogin(subject: $user->id, externalTenantId: $user->tenant_id);
 ```
 
 ### 1. Generate the signing keypair
@@ -184,32 +185,62 @@ and the tokens you sign from drifting apart. `listIdentityProviders()` reads bac
 what IOCloud has stored. Pass `allowJitTenants: true` as well to create tenants at
 their first login (see below).
 
-### 5. Log a user in
+### 5. Give your frontend a subject token
+
+Your frontend's chat client asks your backend for a subject token, through the
+callback you pass it, and exchanges the token with IOCloud itself. The endpoint
+it calls sits behind your own login:
 
 ```php
-$session = IOCloud::federatedLogin(
-    subject: $user->id,                  // stable and never reused
-    externalTenantId: $user->tenant_id,
-    email: $user->email,
-    name: $user->name,
-    emailVerified: $user->hasVerifiedEmail(),
-);
+use Illuminate\Http\Request;
+use IOCloud\Laravel\Facades\IOCloud;
 
-$session->accessToken;   // opaque platform token — Authorization: Bearer …
-$session->userUuid;      // the IOCloud user this session belongs to
-$session->tenantUuid;    // and its tenant
-$session->expiresAt;     // no refresh tokens; sign and exchange again
+Route::post('/iocloud/subject-token', function (Request $request) {
+    $user = $request->user();
+
+    return ['subject_token' => IOCloud::federatedLogin(
+        subject: $user->id,                  // stable and never reused
+        externalTenantId: $user->tenant_id,
+        email: $user->email,
+        name: $user->name,
+        emailVerified: $user->hasVerifiedEmail(),
+    )];
+})->middleware('auth');
 ```
 
-One call signs the subject token with your private key and exchanges it. Use
-`exchangeSubjectToken()` instead if a token was signed elsewhere.
+`federatedLogin()` signs the subject token with your private key and returns it;
+it sends nothing. The chat client exchanges it (RFC 8693):
+
+```js
+const response = await fetch(`${iocloudBaseUrl}/v1/federation/token`, {
+  method: "POST",
+  body: new URLSearchParams({
+    grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
+    subject_token: subjectToken,
+    subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
+  }),
+});
+const session = await response.json();
+session.access_token;   // opaque platform token — Authorization: Bearer …
+session.user_uuid;      // the IOCloud user this session belongs to
+session.tenant_uuid;    // and its tenant
+session.expires_in;     // no refresh tokens: fetch a new subject token and exchange it
+```
+
+The platform session never passes through your backend. A subject token is
+short-lived and exchanged once, so the chat client asks your endpoint for a new
+one each time it needs a session rather than keeping one. A backend that wants
+the session itself passes the token to `exchangeSubjectToken()`, which returns
+it as a `FederatedSession`; that is also how to exchange a token signed
+elsewhere.
 
 `subject` is the identity key IOCloud stores — the user's `externalId` within
 its tenant. It must be stable across logins and never reused for a different
 person — an email change at your end must not change it.
 
-A rejected exchange throws `IOCloudTokenExchangeException`, carrying the RFC 6749
-`error` and `errorDescription`:
+A rejected exchange answers `400` with an RFC 6749 body, `error` and
+`error_description`; `exchangeSubjectToken()` throws it as
+`IOCloudTokenExchangeException`, carrying `error` and `errorDescription`:
 
 | `error`          | Cause                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -266,7 +297,7 @@ in time in it, so the login needs `email`:
 use IOCloud\Laravel\Data\TenantProfile;
 use IOCloud\Laravel\Facades\IOCloud;
 
-$session = IOCloud::federatedLogin(
+$subjectToken = IOCloud::federatedLogin(
     subject: $user->id,
     email: $user->email,
     tenant: new TenantProfile(
@@ -275,19 +306,16 @@ $session = IOCloud::federatedLogin(
         externalTenantId: $organisation->id,
     ),
 );
-
-if ($session->tenantCreated) {
-    // Created without a planCode, a new tenant has no plan, so it draws on
-    // your credits uncapped.
-    IOCloud::subscribeTenant(tenantUuid: $session->tenantUuid, planUuid: $planUuid);
-}
 ```
 
-Or name one of your tenant plans by its code, and the login creates the tenant
-on that plan, with nothing to subscribe afterwards:
+A tenant created without a plan has none, so it draws on your credits uncapped
+until you subscribe it with `subscribeTenant()`. The exchange that creates it
+answers `tenant_created: true`, but your chat client receives that answer, not
+your backend. So name one of your tenant plans by its code instead, and the
+login creates the tenant on that plan, with nothing to subscribe afterwards:
 
 ```php
-$session = IOCloud::federatedLogin(
+$subjectToken = IOCloud::federatedLogin(
     subject: $user->id,
     email: $user->email,
     tenant: new TenantProfile(
@@ -321,10 +349,10 @@ for an empty name, or an empty contact email, plan code or external tenant id
 when one is given, before signing; the platform judges the rest and answers a malformed profile
 with `invalid_grant`.
 
-`tenantCreated` is true only for the login that created the tenant. A platform
-that predates just-in-time tenants sends neither session member, so
-`tenantUuid` reads as null and `tenantCreated` as false — and a provider's
-`allowJitTenants` as false.
+The exchange's `tenant_created` is true only for the login that created the
+tenant; `exchangeSubjectToken()` reads it as `tenantCreated`. A platform that
+predates just-in-time tenants sends neither `tenant_uuid` nor `tenant_created`,
+so they read as null and false — and a provider's `allowJitTenants` as false.
 
 ### Rotating keys
 

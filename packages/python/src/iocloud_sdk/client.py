@@ -43,7 +43,8 @@ class IOCloudClient:
     """Synchronous client authenticated by partner client credentials.
 
     ``token_issuer`` is only needed for :meth:`federated_login`; supply it and
-    a partner's login controller becomes a single call.
+    the endpoint your frontend fetches its subject token from becomes a single
+    call.
     """
 
     def __init__(
@@ -523,19 +524,23 @@ class IOCloudClient:
         email_verified: bool = False,
         extra_claims: dict[str, Any] | None = None,
         tenant: TenantProfile | None = None,
-    ) -> FederatedSession:
-        """Sign a subject token for a logged-in partner user and exchange it.
+    ) -> str:
+        """Sign the subject token for a logged-in partner user, and send nothing.
 
-        The whole partner-side login integration, in one call. Requires a
-        ``token_issuer`` on the client.
+        Return it to your frontend: the chat client fetches it from your
+        backend and exchanges it at the platform's ``/v1/federation/token``
+        itself, so the platform session never passes through your backend. A
+        backend that wants the session anyway passes the token to
+        :meth:`exchange_subject_token`. Requires a ``token_issuer`` on the
+        client.
 
         ``tenant`` is the tenant to create if this is its first login, on a
-        provider that allows just-in-time tenants; the session's
-        ``tenant_created`` says whether this login created it.
+        provider that allows just-in-time tenants; the exchange's
+        ``tenant_created`` says whether that login created it.
         ``external_tenant_id`` may be left out when ``tenant`` carries one, and
         must equal it when both are given.
         """
-        subject_token = self._require_token_issuer("federated_login").issue(
+        return self._require_token_issuer("federated_login").issue(
             subject=subject,
             external_tenant_id=external_tenant_id,
             email=email,
@@ -544,7 +549,6 @@ class IOCloudClient:
             extra_claims=extra_claims,
             tenant=tenant,
         )
-        return self.exchange_subject_token(subject_token=subject_token)
 
     def create_tenant_credentials(
         self,
