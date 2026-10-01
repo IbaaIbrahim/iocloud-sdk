@@ -4,7 +4,6 @@ namespace App\Services;
 
 use App\Support\DemoUser;
 use App\Support\DemoUserDirectory;
-use IOCloud\Laravel\Data\FederatedSession;
 use IOCloud\Laravel\Data\IdentityProvider;
 use IOCloud\Laravel\Federation\FederationConfig;
 use IOCloud\Laravel\IOCloudClient;
@@ -14,8 +13,9 @@ use RuntimeException;
  * Everything this portal does with IOCloud federation, in one place.
  *
  * Worth reading as the answer to "how much code does federating cost me?" — the
- * SDK signs the token, publishes the JWKS, and performs the RFC 8693 exchange,
- * so what is left is looking up the user.
+ * SDK signs the token and publishes the JWKS, so what is left is looking up the
+ * user. Exchanging the token is the frontend's: its chat client posts it to
+ * IOCloud (RFC 8693) and receives the platform session.
  *
  * Depends on {@see FederationConfig} rather than the token issuer: none of this
  * needs the private key, so a portal with federation half-configured still gets
@@ -31,14 +31,13 @@ final readonly class PartnerFederation
     }
 
     /**
-     * Log a portal user into IOCloud and return the platform session.
+     * Sign a subject token for a portal user, for the frontend to exchange.
      *
-     * `federatedLogin()` mints a subject token signed with this portal's key. A
-     * real portal returns that token to its frontend, whose chat client
-     * exchanges it itself; the demo exchanges it here, so both halves show on
-     * one page.
+     * `federatedLogin()` signs it with this portal's key and sends nothing. A
+     * real portal returns it to its frontend, whose chat client exchanges it at
+     * IOCloud's `/v1/federation/token`; the demo shows it instead.
      */
-    public function logIn(DemoUser $user)
+    public function signSubjectToken(DemoUser $user): string
     {
         return $this->iocloud->federatedLogin(
             subject: $user->subject,

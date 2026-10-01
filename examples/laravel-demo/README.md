@@ -3,7 +3,8 @@
 A minimal Laravel portal that federates its own users into IOCloud with
 [`iocloud/laravel-sdk`](../../packages/laravel). It exists to exercise the SDK
 end to end: key generation, the JWKS endpoint, provider registration, the
-tenant's external id, and the RFC 8693 token exchange.
+tenant's external id, and the subject token your frontend's chat client
+exchanges with IOCloud (RFC 8693).
 
 The demo consumes the SDK from a Composer `path` repository, so any local change
 to `packages/laravel` is picked up immediately.
@@ -15,8 +16,8 @@ to `packages/laravel` is picked up immediately.
 | Generate the RSA keypair                                             | `php artisan iocloud:keys` (SDK)                                                                     |
 | Build the JWKS document                                              | SDK —`IOCloud::jwks()`                                                                              |
 | Choose the JWKS URL and route it                                     | You — one line in[`routes/web.php`](routes/web.php)                                                  |
-| Sign a subject token per login                                       | SDK, inside`IOCloud::federatedLogin()`                                                               |
-| Exchange it for a platform session                                   | SDK, same call                                                                                         |
+| Sign a subject token per login                                       | SDK — `IOCloud::federatedLogin()`, which returns it and sends nothing                                  |
+| Exchange it for a platform session                                   | Your frontend's chat client, at IOCloud's `/v1/federation/token`; the demo shows the token instead      |
 | Register the issuer for an application, set the tenant's external id | SDK calls, driven by[`RegisterFederationCommand`](app/Console/Commands/RegisterFederationCommand.php) |
 | Look up the logged-in user                                           | You —[`PartnerFederation`](app/Services/PartnerFederation.php)                                       |
 
@@ -26,10 +27,10 @@ The JWKS endpoint, in full:
 Route::get('/.well-known/jwks.json', fn (): array => IOCloud::jwks());
 ```
 
-The whole partner-side login, in full:
+The whole partner-side login, in full — the token goes back to your frontend:
 
 ```php
-$session = $iocloud->federatedLogin(
+$subjectToken = $iocloud->federatedLogin(
     subject: $user->subject,             // stable, never-reused partner user id
     externalTenantId: $user->tenantId,   // your organisation id
     email: $user->email,
@@ -103,8 +104,9 @@ php artisan serve --port=8010
 ```
 
 Open [http://127.0.0.1:8010](http://127.0.0.1:8010), pick a user, and press **Continue to IOCloud**.
-The result page shows the platform session; a rejection page shows the RFC error
-and what each one means.
+The result page shows the signed subject token, which you can exchange by hand
+the way the chat client would; a portal without a signing key shows what is
+missing instead.
 
 Check what IOCloud will fetch:
 
@@ -120,10 +122,10 @@ vendor/bin/phpunit
 ```
 
 The tests are the real point of the demo. Nothing is stubbed on the SDK side:
-the fake IOCloud in [`FederatedLoginTest`](tests/Feature/FederatedLoginTest.php)
-does what the platform does — fetches this portal's own JWKS endpoint over HTTP
-and verifies the subject token against it with `firebase/php-jwt`, an
-independent JWT library. A signing, JWKS, or claim-mapping regression in the SDK
+[`FederatedLoginTest`](tests/Feature/FederatedLoginTest.php) does with the
+token the page shows what the platform does — fetches this portal's own JWKS
+endpoint over HTTP and verifies the subject token against it with
+`firebase/php-jwt`, an independent JWT library. A signing, JWKS, or claim-mapping regression in the SDK
 fails these tests.
 
 Covered:
@@ -133,9 +135,8 @@ Covered:
 - every subject token verifies against that key set, with the issuer, audience,
   subject, tenant, email-verified and lifetime claims the platform checks;
 - each login gets a distinct `jti`, so a token cannot be replayed;
-- the exchange uses the RFC 8693 form grammar and sends no `Authorization`
-  header — the subject token is the credential;
-- a rejected exchange surfaces its `error`/`error_description`;
+- the portal sends nothing to IOCloud: exchanging the token is the chat
+  client's job;
 - an unconfigured signing key fails before any network call;
 - provider registration sends exactly the application, issuer, JWKS URL, and
   claim names the SDK signs with, and refuses to register without an
@@ -150,8 +151,9 @@ Covered:
 | `invalid_target`            | No tenant of the provider's application carries the token's tenant claim as its external id. Run`demo:federation:register --tenant=…`.                                                   |
 | `federation_not_configured` | No signing key or no`IOCLOUD_FEDERATION_ISSUER`.                                                                                                                                          |
 
-IOCloud deliberately keeps `error_description` generic; the precise reason is in
-its `user.federated_login_failed` audit event.
+The first two come back to whoever exchanges the token — the chat client — and
+the last one from this portal. IOCloud keeps `error_description` short; the
+precise reason is in its `user.federated_login_failed` audit event.
 
 Reference: [`docs/FEDERATION.md`](../../../docs/FEDERATION.md) in the
 AI-EcoSystem repository documents every claim and provider field.

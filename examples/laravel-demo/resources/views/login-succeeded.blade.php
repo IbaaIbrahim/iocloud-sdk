@@ -1,53 +1,30 @@
 @extends('layout')
 
-@section('title', 'Signed in to IOCloud')
+@section('title', 'A subject token for IOCloud')
 
 @section('content')
-    <h1>{{ $user->name }} is signed in to IOCloud</h1>
+    <h1>A subject token for {{ $user->name }}</h1>
     <p class="lede">
-        The portal signed a subject token with its private key; IOCloud verified it
-        against the published JWKS and issued this platform session.
+        The portal signed this token with its private key and sent it nowhere. A real
+        portal returns it to its frontend, whose chat client exchanges it with IOCloud
+        for the platform session.
     </p>
 
     <table>
         <tbody>
-            {{-- <tr>
-                <th>Platform user</th>
-                <td><code class="wrap">{{ $session->userUuid }}</code></td>
-            </tr>
-            <tr>
-                <th>Name / email on the platform</th>
-                <td>{{ $session->name }} &lt;{{ $session->email }}&gt;</td>
-            </tr>
-            <tr>
-                <th>Token type</th>
-                <td><code>{{ $session->tokenType }}</code></td>
-            </tr>
-            <tr>
-                <th>Issued token type</th>
-                <td><code class="wrap">{{ $session->issuedTokenType }}</code></td>
-            </tr>
-            <tr>
-                <th>Expires</th>
-                <td>
-                    in {{ $session->expiresIn }}s
-                    <span class="muted">({{ $session->expiresAt->format(DATE_ATOM) }})</span>
-                </td>
-            </tr>
-            <tr>
-                <th>Access token</th>
-                <td><code class="wrap">{{ $session->accessToken }}</code></td>
-            </tr> --}}
-            <tr>
-                <th>Access token</th>
-                <td><code class="wrap">{{ $session }}</code></td>
-            </tr>
+        <tr>
+            <th>Subject token</th>
+            <td><code class="wrap">{{ $subjectToken }}</code></td>
+        </tr>
         </tbody>
     </table>
 
     <div class="note">
-        The access token is opaque — not a JWT. Send it as
-        <code>Authorization: Bearer …</code> on the IOCloud job APIs. There are no
-        refresh tokens: when it expires, sign and exchange a new subject token.
+        The chat client posts it to IOCloud's <code>/v1/federation/token</code>
+        (RFC 8693, form-encoded: <code>grant_type</code>, <code>subject_token</code>,
+        <code>subject_token_type</code>) and receives an opaque access token to send
+        as <code>Authorization: Bearer …</code>. A subject token is short-lived and is
+        exchanged once, so the client asks the portal for a fresh one whenever it
+        needs a session.
     </div>
 @endsection

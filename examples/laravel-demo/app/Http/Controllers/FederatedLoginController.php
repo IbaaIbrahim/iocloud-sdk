@@ -6,13 +6,13 @@ use App\Http\Requests\FederatedLoginRequest;
 use App\Services\PartnerFederation;
 use Illuminate\Contracts\View\View;
 use IOCloud\Laravel\Exceptions\IOCloudFederationException;
-use IOCloud\Laravel\Exceptions\IOCloudTokenExchangeException;
 
 /**
  * "Continue to IOCloud" — the one endpoint a partner has to write.
  *
- * A production portal would redirect into IOCloud with the session token rather
- * than render it; the demo shows it so the exchange is visible.
+ * It signs a subject token for the user. A production portal returns that token
+ * to its frontend, whose chat client exchanges it with IOCloud; the demo renders
+ * it, so it can be inspected and exchanged by hand.
  */
 final class FederatedLoginController extends Controller
 {
@@ -23,14 +23,7 @@ final class FederatedLoginController extends Controller
         $user = $federation->requireUser($request->subject());
 
         try {
-            $session = $federation->logIn($user);
-        } catch (IOCloudTokenExchangeException $exception) {
-            // The platform never says which check failed — its audit log does.
-            return view('login-rejected', [
-                'user' => $user,
-                'error' => $exception->error,
-                'errorDescription' => $exception->errorDescription,
-            ]);
+            $subjectToken = $federation->signSubjectToken($user);
         } catch (IOCloudFederationException $exception) {
             return view('login-rejected', [
                 'user' => $user,
@@ -41,7 +34,7 @@ final class FederatedLoginController extends Controller
 
         return view('login-succeeded', [
             'user' => $user,
-            'session' => $session,
+            'subjectToken' => $subjectToken,
         ]);
     }
 }

@@ -34,9 +34,9 @@ carries 0.6.0's changes.
   exist."), reach the chat client that exchanges the token, or are raised by
   `exchangeSubjectToken` as the package's token-exchange error.
 - The READMEs show the endpoint your frontend fetches its token from and the
-  exchange the chat client makes. The Laravel demo exchanges on its own server
-  with `exchangeSubjectToken(federatedLogin(…))`, so both halves show on one
-  page.
+  exchange the chat client makes. The Laravel demo signs the subject token and
+  shows it instead of exchanging it, and its tests verify that token against
+  the portal's own JWKS.
 
 ## 0.6.0 - 2026-09-30
 
