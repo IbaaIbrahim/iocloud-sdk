@@ -8,9 +8,9 @@ The repository prepares releases but intentionally does not store registry
 credentials, other than the two secrets named below. Complete each registry's
 one-time setup before pushing a release tag.
 
-Status as of 0.4.0: **Composer is done and proven** — `LARAVEL_SPLIT_TOKEN` and
-the Packagist hook have published v0.3.0 and v0.4.0. **PyPI and npm have never
-run.** Their steps below may already be complete or may not be; the first tag is
+Status as of 0.6.0 (2026-10-01): **Composer is done and proven** —
+`LARAVEL_SPLIT_TOKEN` and the Packagist hook have published v0.3.0 through
+v0.6.0. **PyPI and npm have never run.** Their steps below may already be complete or may not be; the first tag is
 what will tell you, so push it when you can watch the run rather than as the
 last act of a working day.
 

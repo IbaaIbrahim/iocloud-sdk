@@ -3,29 +3,52 @@
 All notable SDK changes are documented here. Each ecosystem can be released
 independently, so entries identify the affected packages.
 
-## 0.6.0 - 2026-09-30
+## 0.7.0 - 2026-10-01
 
-Just-in-time tenants, and tenant slugs the platform generates, for all three
-packages. A partner no longer has to call `createTenant` in a separate flow
-before a new organisation's first login: the login carries the tenant's
-details, and the platform creates the tenant during the token exchange if it
-does not exist yet. `createTenant` loses its slug, a tenant's contact email may
-now be null, and `federatedLogin` returns the subject token for your frontend
-to exchange instead of exchanging it (see Breaking); every new parameter is
-optional.
+`federatedLogin` hands the subject token to your frontend instead of exchanging
+it, for all three packages. Your backend signs the token; the chat client
+fetches it through the callback you give it and exchanges it with the platform
+itself, so the platform session never passes through your backend. Python and
+npm have never been published, so their first release, at this version, also
+carries 0.6.0's changes.
 
 ### Breaking
 
 - `federatedLogin` returns the signed subject token and sends nothing: a `str`
   in Python, a `string` in Node, where it is now synchronous (`await` still
   works, `.then()` does not), and a `string` in Laravel, facade included. It
-  used to exchange the token itself and return the `FederatedSession`, which
-  put the platform session in your backend. Return the token to your frontend
-  instead: its chat client fetches it through its callback and exchanges it at
-  `/v1/federation/token` itself, so the session never passes through your
-  backend. A backend that wants the session still gets it with
-  `exchangeSubjectToken(federatedLogin(…))`, exactly what 0.5.0's
+  used to exchange the token itself and return the `FederatedSession`. Return
+  the token to your frontend instead: its chat client exchanges it at
+  `/v1/federation/token`. A backend that wants the session still gets it with
+  `exchangeSubjectToken(federatedLogin(…))`, exactly what 0.6.0's
   `federatedLogin` did.
+
+### Changed
+
+- The exchange's `tenant_created` now reaches whoever exchanges the token —
+  your chat client, not your backend — so a just-in-time tenant should be
+  created on its plan by naming it with `planCode`, rather than subscribed with
+  `subscribeTenant` once `tenantCreated` comes back.
+- The platform's refusals of an exchange, `invalid_target` included ("The
+  token's tenant could not be created.", "The token's tenant plan does not
+  exist."), reach the chat client that exchanges the token, or are raised by
+  `exchangeSubjectToken` as the package's token-exchange error.
+- The READMEs show the endpoint your frontend fetches its token from and the
+  exchange the chat client makes. The Laravel demo exchanges on its own server
+  with `exchangeSubjectToken(federatedLogin(…))`, so both halves show on one
+  page.
+
+## 0.6.0 - 2026-09-30
+
+Just-in-time tenants, and tenant slugs the platform generates, for all three
+packages. A partner no longer has to call `createTenant` in a separate flow
+before a new organisation's first login: the login carries the tenant's
+details, and the platform creates the tenant during the token exchange if it
+does not exist yet. `createTenant` loses its slug, and a tenant's contact email
+may now be null (see Breaking); every new parameter is optional.
+
+### Breaking
+
 - `createTenant` takes no slug. The platform generates one from the name —
   transliterated to lowercase ASCII and hyphens, at most 91 characters cut at a
   word boundary, or `tenant` when the name has no letters or digits — then a
@@ -91,13 +114,12 @@ optional.
   the platform ignores the profile, so a later login with different values
   changes nothing.
 - In the rare case the platform cannot create the tenant, it refuses the login
-  with `invalid_target` ("The token's tenant could not be created."), which
-  `exchangeSubjectToken` raises as the package's token-exchange error.
-- A tenant created at login has no plan unless its profile names one by
-  `planCode` (below), and draws on your credits uncapped until it is
-  subscribed. The exchange's `tenant_created` reaches whoever exchanges the
-  token — your chat client, not your backend — so name the plan by `planCode`
-  rather than subscribing afterwards.
+  with `invalid_target` ("The token's tenant could not be created."), surfaced
+  as the package's token-exchange error.
+- A tenant created at login has no plan, unless its profile names one by
+  `planCode` (below), so it draws on your credits uncapped. When
+  `tenantCreated` is true and the profile named no plan, subscribe it with
+  `subscribeTenant`.
 - Tenant plans carry an optional `planCode`: your own code for the plan, 1 to
   100 characters, unique among your tenant plans and matched exactly, case
   included. You set it on the plan in the Admin Dashboard, or with
@@ -117,8 +139,7 @@ optional.
   written in the same transaction as the tenant, so the tenant exists with its
   plan or not at all. A code that names none of your tenant plans refuses the
   login with `invalid_target` ("The token's tenant plan does not exist."),
-  which `exchangeSubjectToken` raises as the package's token-exchange error,
-  and creates nothing; one
+  surfaced as the package's token-exchange error, and creates nothing; one
   that is not a string of 1 to 100 characters makes the profile malformed
   (`invalid_grant`). Like the rest of the profile, it is never read once the
   tenant exists, so it never changes an existing tenant's plan.

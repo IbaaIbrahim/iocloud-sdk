@@ -389,15 +389,15 @@ missing trusted publisher or a wrong environment name surfaces.
 
 | Package               | Published on the registry | Setup state                                            |
 | --------------------- | ------------------------- | ------------------------------------------------------ |
-| `iocloud/laravel-sdk` | v0.3.0, v0.4.0, v0.5.0    | confirmed: `LARAVEL_SPLIT_TOKEN` + Packagist hook work  |
+| `iocloud/laravel-sdk` | v0.3.0 through v0.6.0     | confirmed: `LARAVEL_SPLIT_TOKEN` + Packagist hook work  |
 | `iocloud-sdk` (PyPI)  | never                     | unverified: needs the trusted publisher + `pypi` env    |
 | `@iocloud/sdk` (npm)  | never                     | unverified: needs `NPM_TOKEN` + `npm` env               |
 
-The three do not share a version counter. Laravel is published through 0.5.0, so
-its next release is 0.6.0. Python and npm were never tagged at 0.4.0 or 0.5.0,
-and their manifests now read 0.6.0, so `python-v0.6.0` and `node-v0.6.0` are
+The three do not share a version counter. Laravel is published through 0.6.0, so
+its next release is 0.7.0. Python and npm were never tagged at any version,
+and their manifests now read 0.7.0, so `python-v0.7.0` and `node-v0.7.0` are
 their next tags; an earlier version of either could now only be cut from a
-commit before that bump. The snippets below write `0.6.0` throughout —
+commit before that bump. The snippets below write `0.7.0` throughout —
 substitute the version that package is actually going to.
 
 ### Releasing the Laravel package
@@ -413,12 +413,12 @@ git switch main && git pull
 cd packages/laravel && composer validate --strict && composer install && composer test && cd ../..
 
 # 3. Tag that commit and push the tag.
-git tag laravel-v0.6.0
-git push origin laravel-v0.6.0
+git tag laravel-v0.7.0
+git push origin laravel-v0.7.0
 ```
 
 The workflow then re-runs the package tests, `git subtree split --prefix=packages/laravel`
-into `IbaaIbrahim/iocloud-laravel-sdk`, and pushes a bare `v0.6.0` tag there;
+into `IbaaIbrahim/iocloud-laravel-sdk`, and pushes a bare `v0.7.0` tag there;
 Packagist's GitHub hook indexes it within a minute or two. The split is needed
 because Packagist expects `composer.json` at the repository root.
 
@@ -434,12 +434,12 @@ curl -s https://repo.packagist.org/p2/iocloud/laravel-sdk.json \
 ### Releasing the Python package
 
 `pyproject.toml` carries the version and the workflow never compares it with the
-tag, so the **manifest** decides what is published: a `python-v0.6.0` tag on a
-manifest still reading 0.5.0 re-publishes 0.5.0, which PyPI then rejects as a
-duplicate.
+tag, so the **manifest** decides what is published: a `python-v0.7.0` tag on a
+manifest still reading 0.6.0 publishes 0.6.0, and PyPI rejects a version it
+already holds as a duplicate.
 
 ```bash
-# 1. Bump packages/python/pyproject.toml -> version = "0.6.0", and commit it.
+# 1. Bump packages/python/pyproject.toml -> version = "0.7.0", and commit it.
 
 # 2. Run the suite yourself. publish-python.yml has no test step — it builds and
 #    uploads — so nothing else gates this release.
@@ -447,7 +447,7 @@ python -m unittest discover -s packages/python/tests   # after the editable inst
 
 # 3. Tag the commit you just tested and push.
 git push origin main
-git tag python-v0.6.0 && git push origin python-v0.6.0
+git tag python-v0.7.0 && git push origin python-v0.7.0
 ```
 
 `publish-python.yml` builds an sdist and a wheel, then uploads with
@@ -462,11 +462,11 @@ sat at 0.2.0 through two manifest bumps before anyone noticed.
 
 ```bash
 cd packages/node
-npm version 0.6.0 --no-git-tag-version    # package.json AND package-lock.json
+npm version 0.7.0 --no-git-tag-version    # package.json AND package-lock.json
 npm test                                  # builds first, then runs the listed suites
 cd ../..
-git commit -am "chore: release node 0.6.0" && git push origin main
-git tag node-v0.6.0 && git push origin node-v0.6.0
+git commit -am "chore: release node 0.7.0" && git push origin main
+git tag node-v0.7.0 && git push origin node-v0.7.0
 ```
 
 `publish-node.yml` has no test step either, but `npm publish` triggers the
