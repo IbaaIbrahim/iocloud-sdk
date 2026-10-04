@@ -40,7 +40,8 @@ final class RegisterFederationCommandTest extends TestCase
 
             return $body['application_uuid'] === self::APPLICATION_UUID
                 && $body['issuer'] === self::ISSUER
-                && $body['jwks_url'] === self::ISSUER.'/.well-known/jwks.json'
+                && $body['jwks_path'] === '/.well-known/jwks.json'
+                && ! array_key_exists('jwks_url', $body)
                 && $body['allowed_audiences'] === [self::AUDIENCE]
                 && $body['allowed_algorithms'] === ['RS256']
                 && $body['user_claim'] === 'sub'
@@ -99,6 +100,8 @@ final class RegisterFederationCommandTest extends TestCase
 
         $this->artisan('demo:federation:register', ['--tenant' => self::TENANT_UUID])
             ->expectsOutputToContain('already registered')
+            // Derived: IOCloud answers issuer_origin and jwks_path, not the URL.
+            ->expectsOutputToContain(self::ISSUER.'/.well-known/jwks.json')
             ->assertSuccessful();
 
         // Registering twice would be rejected with ISSUER_ALREADY_TRUSTED.
@@ -188,7 +191,12 @@ final class RegisterFederationCommandTest extends TestCase
         ]);
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * A provider as IOCloud answers it: its keys at issuer_origin + jwks_path,
+     * and no jwks_url.
+     *
+     * @return array<string, mixed>
+     */
     private function providerBody(): array
     {
         return [
@@ -196,7 +204,8 @@ final class RegisterFederationCommandTest extends TestCase
             'application_uuid' => self::APPLICATION_UUID,
             'name' => 'Acme Portal (demo)',
             'issuer' => self::ISSUER,
-            'jwks_url' => self::ISSUER.'/.well-known/jwks.json',
+            'issuer_origin' => self::ISSUER,
+            'jwks_path' => '/.well-known/jwks.json',
             'allowed_audiences' => [self::AUDIENCE],
             'allowed_algorithms' => ['RS256'],
             'token_max_age_seconds' => 900,

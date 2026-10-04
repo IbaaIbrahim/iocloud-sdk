@@ -18,6 +18,7 @@ import {
 } from "node:crypto";
 
 import { IOCloudFederationError } from "./errors.js";
+import { pathOf } from "./jwks.js";
 import type {
   JsonWebKey,
   JsonWebKeySet,
@@ -275,9 +276,17 @@ export class SubjectTokenIssuer {
     return this.#signingKey;
   }
 
-  /** Where the platform must be told to fetch this issuer's keys. */
+  /** Where this issuer serves its keys: the URL {@link jwks} is published at. */
   get jwksUrl(): string {
     return `${this.#issuer}/.well-known/jwks.json`;
+  }
+
+  /**
+   * {@link jwksUrl}'s path: what the platform is told to fetch from the
+   * issuer's origin. Pass it as `createIdentityProvider({ jwksPath })`.
+   */
+  get jwksPath(): string {
+    return pathOf(this.jwksUrl);
   }
 
   /** The JWKS document to serve at {@link jwksUrl}. */

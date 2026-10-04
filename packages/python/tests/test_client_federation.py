@@ -1,6 +1,8 @@
 import json
 import unittest
+import warnings
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from urllib.parse import parse_qs
 
 import httpx
@@ -9,6 +11,7 @@ import jwt
 from iocloud_sdk import (
     JWT_TOKEN_TYPE,
     TOKEN_EXCHANGE_GRANT_TYPE,
+    IdentityProvider,
     IOCloudClient,
     IOCloudFederationError,
     IOCloudTokenExchangeError,
@@ -49,6 +52,21 @@ PROVIDER_BODY = {
     "status": "active",
     "created_at": "2026-07-09T10:15:00Z",
 }
+# A platform that stores the key-set location as issuer_origin + jwks_path and
+# still sends the derived jwks_url beside them; the next one drops jwks_url.
+CURRENT_PROVIDER_BODY = {
+    **PROVIDER_BODY,
+    "issuer_origin": "https://portal.acme.example",
+    "jwks_path": "/.well-known/jwks.json",
+    "allow_jit_tenants": False,
+}
+# The shape every SDK is held to, shared across the three packages.
+CONTRACT_FIXTURE = (
+    Path(__file__).resolve().parents[3]
+    / "contracts"
+    / "fixtures"
+    / "identity-provider.json"
+)
 SESSION_BODY = {
     "access_token": "platform-session-token",
     "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
@@ -99,7 +117,7 @@ class ClientFederationTestCase(unittest.TestCase):
 
 
 class CreateIdentityProviderTests(ClientFederationTestCase):
-    def test_it_derives_the_jwks_url_from_the_issuer(self) -> None:
+    def test_it_sends_the_default_jwks_path_and_no_jwks_url(self) -> None:
         client, transport = self.build_client(
             {
                 "/v1/partner/auth/token": httpx.Response(200, json=PARTNER_TOKEN_BODY),
@@ -122,9 +140,8 @@ class CreateIdentityProviderTests(ClientFederationTestCase):
         body = json.loads(sent.content)
         self.assertEqual(body["application_uuid"], APPLICATION_UUID)
         self.assertEqual(body["issuer"], "https://portal.acme.example")
-        self.assertEqual(
-            body["jwks_url"], "https://portal.acme.example/.well-known/jwks.json"
-        )
+        self.assertEqual(body["jwks_path"], "/.well-known/jwks.json")
+        self.assertNotIn("jwks_url", body)
         self.assertEqual(body["allowed_algorithms"], ["RS256"])
         self.assertEqual(body["token_max_age_seconds"], 900)
         self.assertTrue(body["require_email_verified"])
@@ -267,6 +284,238 @@ class CreateIdentityProviderTests(ClientFederationTestCase):
         self.assertEqual(sent.content, b"")
 
 
+class JwksPathTests(ClientFederationTestCase):
+    """The platform takes ``jwks_path`` on the issuer's origin; a ``jwks_url`` is a 422."""
+
+    def build_registering_client(self) -> tuple[IOCloudClient, RecordingTransport]:
+        return self.build_client(
+            {
+                "/v1/partner/auth/token": httpx.Response(200, json=PARTNER_TOKEN_BODY),
+                "/v1/partner/federation/providers": httpx.Response(
+                    201, json={"data": {"provider": PROVIDER_BODY}}
+                ),
+            }
+        )
+
+    def sent_body(self, transport: RecordingTransport) -> dict:
+        return json.loads(
+            transport.request_to("/v1/partner/federation/providers").content
+        )
+
+    def test_it_sends_the_jwks_path_it_is_given(self) -> None:
+        client, transport = self.build_registering_client()
+
+        client.create_identity_provider(
+            application_uuid=APPLICATION_UUID,
+            name="Acme Portal",
+            issuer="https://portal.acme.example",
+            jwks_path="/.well-known/acme/keys.json",
+            allowed_audiences=["ai-ecosystem"],
+        )
+
+        body = self.sent_body(transport)
+        self.assertEqual(body["jwks_path"], "/.well-known/acme/keys.json")
+        self.assertNotIn("jwks_url", body)
+
+    def test_registering_a_subject_token_issuer_sends_its_jwks_path(self) -> None:
+        token_issuer = SubjectTokenIssuer(
+            signing_key=FederationSigningKey.generate(),
+            issuer="https://portal.acme.example",
+            audience="ai-ecosystem",
+        )
+        client, transport = self.build_registering_client()
+
+        client.create_identity_provider(
+            application_uuid=APPLICATION_UUID,
+            name="Acme Portal",
+            issuer=token_issuer.issuer,
+            jwks_path=token_issuer.jwks_path,
+            allowed_audiences=[token_issuer.audience],
+            claim_names=token_issuer.claim_names,
+        )
+
+        body = self.sent_body(transport)
+        self.assertEqual(body["jwks_path"], "/.well-known/jwks.json")
+        self.assertNotIn("jwks_url", body)
+
+    def test_a_deprecated_jwks_url_on_the_issuers_origin_is_sent_as_its_path(
+        self,
+    ) -> None:
+        client, transport = self.build_registering_client()
+
+        with self.assertWarns(DeprecationWarning):
+            client.create_identity_provider(
+                application_uuid=APPLICATION_UUID,
+                name="Acme Portal",
+                issuer="https://portal.acme.example",
+                # Same origin, spelled differently: case and the default port.
+                jwks_url="HTTPS://Portal.Acme.Example:443/.well-known/acme/keys.json",
+                allowed_audiences=["ai-ecosystem"],
+            )
+
+        body = self.sent_body(transport)
+        self.assertEqual(body["jwks_path"], "/.well-known/acme/keys.json")
+        self.assertNotIn("jwks_url", body)
+
+    def test_a_subject_token_issuers_jwks_url_still_registers_as_its_path(
+        self,
+    ) -> None:
+        # What the README showed before jwks_path: it keeps working, deprecated.
+        token_issuer = SubjectTokenIssuer(
+            signing_key=FederationSigningKey.generate(),
+            issuer="https://portal.acme.example",
+            audience="ai-ecosystem",
+        )
+        client, transport = self.build_registering_client()
+
+        with self.assertWarns(DeprecationWarning):
+            client.create_identity_provider(
+                application_uuid=APPLICATION_UUID,
+                name="Acme Portal",
+                issuer=token_issuer.issuer,
+                jwks_url=token_issuer.jwks_url,
+                allowed_audiences=[token_issuer.audience],
+            )
+
+        body = self.sent_body(transport)
+        self.assertEqual(body["jwks_path"], token_issuer.jwks_path)
+        self.assertNotIn("jwks_url", body)
+
+    def test_a_deprecated_jwks_url_off_the_issuers_origin_is_refused(self) -> None:
+        off_origin = {
+            "another host": "https://keys.example.net/.well-known/jwks.json",
+            "a subdomain": "https://keys.portal.acme.example/.well-known/jwks.json",
+            "another scheme": "http://portal.acme.example/.well-known/jwks.json",
+            "another port": "https://portal.acme.example:8443/.well-known/jwks.json",
+            "not a URL": "/.well-known/jwks.json",
+        }
+        for case, jwks_url in off_origin.items():
+            with self.subTest(case):
+                client, transport = self.build_registering_client()
+
+                with self.assertWarns(DeprecationWarning):
+                    with self.assertRaisesRegex(ValueError, "issuer's origin"):
+                        client.create_identity_provider(
+                            application_uuid=APPLICATION_UUID,
+                            name="Acme Portal",
+                            issuer="https://portal.acme.example",
+                            jwks_url=jwks_url,
+                            allowed_audiences=["ai-ecosystem"],
+                        )
+
+                self.assertEqual(transport.requests, [])
+
+    def test_a_deprecated_jwks_url_with_a_query_or_fragment_is_refused(self) -> None:
+        for jwks_url in (
+            "https://portal.acme.example/.well-known/jwks.json?tenant=acme",
+            "https://portal.acme.example/.well-known/jwks.json#keys",
+        ):
+            with self.subTest(jwks_url):
+                client, transport = self.build_registering_client()
+
+                with self.assertWarns(DeprecationWarning):
+                    with self.assertRaisesRegex(ValueError, "query or a fragment"):
+                        client.create_identity_provider(
+                            application_uuid=APPLICATION_UUID,
+                            name="Acme Portal",
+                            issuer="https://portal.acme.example",
+                            jwks_url=jwks_url,
+                            allowed_audiences=["ai-ecosystem"],
+                        )
+
+                self.assertEqual(transport.requests, [])
+
+    def test_jwks_path_and_jwks_url_together_are_refused(self) -> None:
+        client, transport = self.build_registering_client()
+
+        with self.assertWarns(DeprecationWarning):
+            with self.assertRaisesRegex(ValueError, "not both"):
+                client.create_identity_provider(
+                    application_uuid=APPLICATION_UUID,
+                    name="Acme Portal",
+                    issuer="https://portal.acme.example",
+                    jwks_path="/.well-known/jwks.json",
+                    jwks_url="https://portal.acme.example/.well-known/jwks.json",
+                    allowed_audiences=["ai-ecosystem"],
+                )
+
+        self.assertEqual(transport.requests, [])
+
+    def test_no_deprecation_warning_without_jwks_url(self) -> None:
+        client, _ = self.build_registering_client()
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            client.create_identity_provider(
+                application_uuid=APPLICATION_UUID,
+                name="Acme Portal",
+                issuer="https://portal.acme.example",
+                allowed_audiences=["ai-ecosystem"],
+            )
+
+
+class IdentityProviderShapeTests(unittest.TestCase):
+    """Every platform's identity provider parses, with or without ``jwks_url``."""
+
+    def test_the_contract_fixture_parses_without_jwks_url(self) -> None:
+        payload = json.loads(CONTRACT_FIXTURE.read_text(encoding="utf-8"))
+        provider_payload = payload["data"]["provider"]
+        self.assertNotIn("jwks_url", provider_payload)
+
+        provider = IdentityProvider.from_payload(provider_payload)
+
+        self.assertEqual(provider.issuer_origin, "https://portal.acme.example")
+        self.assertEqual(provider.jwks_path, "/.well-known/jwks.json")
+        self.assertEqual(
+            provider.jwks_url, "https://portal.acme.example/.well-known/jwks.json"
+        )
+
+    def test_a_platform_without_jwks_url_derives_it_from_origin_and_path(
+        self,
+    ) -> None:
+        payload = {
+            key: value
+            for key, value in CURRENT_PROVIDER_BODY.items()
+            if key != "jwks_url"
+        }
+        payload["jwks_path"] = "/.well-known/acme/keys.json"
+
+        provider = IdentityProvider.from_payload(payload)
+
+        self.assertEqual(provider.issuer_origin, "https://portal.acme.example")
+        self.assertEqual(provider.jwks_path, "/.well-known/acme/keys.json")
+        self.assertEqual(
+            provider.jwks_url, "https://portal.acme.example/.well-known/acme/keys.json"
+        )
+
+    def test_a_platform_that_still_sends_jwks_url_parses_unchanged(self) -> None:
+        provider = IdentityProvider.from_payload(CURRENT_PROVIDER_BODY)
+
+        self.assertEqual(provider.issuer_origin, "https://portal.acme.example")
+        self.assertEqual(provider.jwks_path, "/.well-known/jwks.json")
+        self.assertEqual(
+            provider.jwks_url, "https://portal.acme.example/.well-known/jwks.json"
+        )
+
+    def test_a_platform_from_before_jwks_path_derives_origin_and_path(self) -> None:
+        # PROVIDER_BODY carries jwks_url alone, as the SDK first knew it.
+        provider = IdentityProvider.from_payload(PROVIDER_BODY)
+
+        self.assertEqual(provider.issuer_origin, "https://portal.acme.example")
+        self.assertEqual(provider.jwks_path, "/.well-known/jwks.json")
+        self.assertEqual(provider.jwks_url, PROVIDER_BODY["jwks_url"])
+
+    def test_a_payload_naming_no_jwks_location_at_all_is_refused(self) -> None:
+        payload = {
+            key: value
+            for key, value in CURRENT_PROVIDER_BODY.items()
+            if key not in {"jwks_url", "jwks_path"}
+        }
+
+        with self.assertRaises(KeyError):
+            IdentityProvider.from_payload(payload)
+
+
 class ExchangeSubjectTokenTests(ClientFederationTestCase):
     def test_it_posts_the_rfc_8693_form_grammar_without_a_partner_token(self) -> None:
         client, transport = self.build_client(
@@ -403,6 +652,7 @@ class PublishJwksTests(ClientFederationTestCase):
         self.assertEqual(
             details["jwks_url"], "https://portal.acme.example/.well-known/jwks.json"
         )
+        self.assertEqual(details["jwks_path"], "/.well-known/jwks.json")
         self.assertEqual(details["kid"], signing_key.kid)
 
     def test_it_reports_a_missing_issuer_rather_than_an_empty_document(self) -> None:

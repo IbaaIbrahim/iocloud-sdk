@@ -119,10 +119,16 @@ final class KeysCommand extends Command
             $issuer ?? '<not set: IOCLOUD_FEDERATION_ISSUER>',
         );
         $this->components->twoColumnDetail(
-            'Register this jwks_url',
+            'Serve the JWKS at',
             $issuer === null
                 ? '<needs IOCLOUD_FEDERATION_ISSUER>'
-                : $issuer.'/.well-known/jwks.json',
+                : $config->jwksUrl(),
+        );
+        $this->components->twoColumnDetail(
+            'Register this jwks_path',
+            $issuer === null
+                ? '<needs IOCLOUD_FEDERATION_ISSUER>'
+                : $config->jwksPath(),
         );
 
         $this->newLine();

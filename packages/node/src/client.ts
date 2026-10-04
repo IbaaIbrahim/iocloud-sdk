@@ -5,6 +5,7 @@ import {
   IOCloudTokenExchangeError,
 } from "./errors.js";
 import type { SubjectTokenIssuer } from "./federation.js";
+import { originOf, pathOf, resolveJwksPath } from "./jwks.js";
 import type {
   ActivateTenantSubscriptionInput,
   ActivateTenantTopupInput,
@@ -353,10 +354,17 @@ export class IOCloudClient {
    * have several providers, and any of them logs in any of its users, so they
    * must all sign the same tenant and user ids.
    *
-   * `jwksUrl` defaults to `<issuer>/.well-known/jwks.json`, the path the SDK's
-   * JWKS document is meant to be served from. Pass the same `claimNames` as the
-   * {@link SubjectTokenIssuer} that signs the tokens, so the two configurations
-   * cannot drift apart.
+   * `jwksPath` is where the platform fetches the issuer's keys: a path on the
+   * issuer's origin, under `/.well-known/`. It defaults to
+   * `/.well-known/jwks.json`, the platform's default and the path the SDK's
+   * JWKS document is meant to be served from; a {@link SubjectTokenIssuer}'s is
+   * its `jwksPath`. Pass the same `claimNames` as the issuer that signs the
+   * tokens, so the two configurations cannot drift apart.
+   *
+   * `jwksUrl` is deprecated: pass `jwksPath`. It is still accepted, and only its
+   * path is sent, so it must be on the issuer's own origin and carry no query
+   * or fragment; anything else throws a `TypeError` before any request, as does
+   * passing both.
    *
    * `allowJitTenants` lets a login whose tenant claim names no tenant of the
    * application create it, from the `tenant` passed to {@link federatedLogin}.
@@ -367,6 +375,10 @@ export class IOCloudClient {
     input: CreateIdentityProviderInput,
   ): Promise<IdentityProvider> {
     const issuer = input.issuer.replace(/\/+$/, "");
+    // `?? undefined`: a JavaScript caller's null means "not given", as before.
+    const jwksUrl = input.jwksUrl ?? undefined;
+    if (jwksUrl !== undefined) warnJwksUrlDeprecated();
+    const jwksPath = resolveJwksPath(issuer, input.jwksPath ?? undefined, jwksUrl);
     const claimNames = { ...DEFAULT_CLAIM_NAMES, ...input.claimNames };
     const data = await this.partnerRequest(
       "POST",
@@ -375,7 +387,7 @@ export class IOCloudClient {
         application_uuid: input.applicationUuid,
         name: input.name,
         issuer,
-        jwks_url: input.jwksUrl ?? `${issuer}/.well-known/jwks.json`,
+        jwks_path: jwksPath,
         allowed_audiences: input.allowedAudiences,
         allowed_algorithms: input.allowedAlgorithms ?? DEFAULT_ALLOWED_ALGORITHMS,
         token_max_age_seconds:
@@ -414,18 +426,24 @@ export class IOCloudClient {
    * The public key set to publish at `<issuer>/.well-known/jwks.json`.
    *
    * Return it straight from a route handler — this is the whole JWKS endpoint.
-   * The path is yours to choose; it only has to match the `jwksUrl` registered
-   * with the platform. Contains public key material only, and is safe to cache.
+   * The path is yours to choose, on the issuer's origin and under
+   * `/.well-known/`; it only has to match the `jwksPath` registered with the
+   * platform. Contains public key material only, and is safe to cache.
    */
   jwks(): JsonWebKeySet {
     return this.#requireTokenIssuer("jwks").jwks();
   }
 
-  /** The issuer, audience, JWKS URL, and key id this client signs under. */
+  /**
+   * The issuer, audience, JWKS URL and path, and key id this client signs
+   * under. `jwksPath` is what to register with the platform; `jwksUrl` is where
+   * to serve {@link jwks}.
+   */
   federationDetails(): {
     issuer: string;
     audience: string;
     jwksUrl: string;
+    jwksPath: string;
     kid: string;
   } {
     const tokenIssuer = this.#requireTokenIssuer("federationDetails");
@@ -433,6 +451,7 @@ export class IOCloudClient {
       issuer: tokenIssuer.issuer,
       audience: tokenIssuer.audience,
       jwksUrl: tokenIssuer.jwksUrl,
+      jwksPath: tokenIssuer.jwksPath,
       kid: tokenIssuer.signingKey.kid,
     };
   }
@@ -823,12 +842,23 @@ function parseTenantSubscription(payload: JsonObject): TenantSubscription {
 }
 
 function parseIdentityProvider(payload: JsonObject): IdentityProvider {
+  const issuer = string(payload.issuer);
+  // What the platform fetches; it stopped sending the URL itself.
+  const jwksUrl =
+    payload.jwks_url === undefined || payload.jwks_url === null
+      ? string(payload.issuer_origin) + string(payload.jwks_path)
+      : string(payload.jwks_url);
   return {
     uuid: string(payload.uuid),
     applicationUuid: string(payload.application_uuid),
     name: string(payload.name),
-    issuer: string(payload.issuer),
-    jwksUrl: string(payload.jwks_url),
+    issuer,
+    // Both absent from a platform that predates them: derived from the
+    // issuer and the JWKS URL.
+    issuerOrigin:
+      nullableString(payload.issuer_origin) ?? originOf(issuer) ?? "",
+    jwksPath: nullableString(payload.jwks_path) ?? pathOf(jwksUrl),
+    jwksUrl,
     allowedAudiences: array(payload.allowed_audiences).map(string),
     allowedAlgorithms: array(payload.allowed_algorithms).map(string),
     tokenMaxAgeSeconds: integer(payload.token_max_age_seconds),
@@ -875,6 +905,19 @@ function parseJsonObject(text: string): JsonObject {
   } catch {
     return {};
   }
+}
+
+let jwksUrlDeprecationWarned = false;
+
+/** Once per process, as Node's own deprecations are. */
+function warnJwksUrlDeprecated(): void {
+  if (jwksUrlDeprecationWarned) return;
+  jwksUrlDeprecationWarned = true;
+  globalThis.process?.emitWarning?.(
+    "createIdentityProvider({ jwksUrl }) is deprecated: pass jwksPath, the path " +
+      "on the issuer's origin, instead.",
+    { type: "DeprecationWarning", code: "IOCLOUD_JWKS_URL" },
+  );
 }
 
 function tokenIsFresh(token?: PartnerToken): token is PartnerToken {

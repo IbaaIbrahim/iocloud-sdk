@@ -76,8 +76,9 @@ php artisan iocloud:keys
 ```
 
 It writes `storage/iocloud-federation-private.key` (owner-only) and
-`storage/iocloud-federation-public.key`, then prints the `kid`, the `jwks_url` to
-register, and the public key set.
+`storage/iocloud-federation-public.key`, then prints the `kid`, the JWKS URL to
+serve, the `jwks_path` to register, and the public key set. IOCloud fetches the
+keys from the issuer's origin plus that path, and from nowhere else.
 
 Register the issuer and set the tenant's external id:
 
@@ -138,9 +139,9 @@ Covered:
 - the portal sends nothing to IOCloud: exchanging the token is the chat
   client's job;
 - an unconfigured signing key fails before any network call;
-- provider registration sends exactly the application, issuer, JWKS URL, and
-  claim names the SDK signs with, and refuses to register without an
-  application;
+- provider registration sends exactly the application, issuer, JWKS path, and
+  claim names the SDK signs with, and no `jwks_url`, which IOCloud refuses; it
+  refuses to register without an application;
 - the tenant gets the portal's organisation id as its external id.
 
 ## The three failure modes worth knowing

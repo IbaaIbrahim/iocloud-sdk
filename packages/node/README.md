@@ -63,8 +63,8 @@ and a published JWKS always matches the tokens you sign.
 ### Publish the JWKS from your own route
 
 `signingKey.jwks()` — or `client.jwks()` once a token issuer is configured —
-returns the document. Route it wherever you like; the path only has to match the
-`jwksUrl` you register. With Express:
+returns the document. Route it on the issuer's origin, under `/.well-known/`;
+the path only has to match the `jwksPath` you register. With Express:
 
 ```ts
 app.get("/.well-known/jwks.json", (_request, response) => {
@@ -81,8 +81,8 @@ app.get("/.well-known/jwks.json", (_request, response) => {
 ```
 
 Public key material only — safe to serve publicly and to cache.
-`client.federationDetails()` returns the `issuer`, `audience`, `jwksUrl`, and
-`kid` in use.
+`client.federationDetails()` returns the `issuer`, `audience`, `jwksUrl` (where
+to serve it), `jwksPath` (what to register), and `kid` in use.
 
 ### Register the issuer, once
 
@@ -108,7 +108,7 @@ const provider = await client.createIdentityProvider({
   name: "Acme Portal",
   issuer: tokenIssuer.issuer,
   allowedAudiences: [tokenIssuer.audience],
-  jwksUrl: tokenIssuer.jwksUrl,
+  jwksPath: tokenIssuer.jwksPath,
   requireEmailVerified: true,
   allowJitUsers: true,
   claimNames: tokenIssuer.claimNames,
@@ -129,10 +129,19 @@ of them logs in any of its users, so they must all sign the same tenant and user
 ids. A tenant's `externalId` is unique within its application; one another
 tenant holds is refused with `TENANT_EXTERNAL_ID_TAKEN`.
 
-Passing the issuer's own `jwksUrl` and `claimNames` is what keeps the registration
-and the tokens you sign from drifting apart. `listIdentityProviders()` reads back
-what IOCloud has stored. Pass `allowJitTenants: true` as well to create tenants at
-their first login (see below).
+Passing the issuer's own `jwksPath` and `claimNames` is what keeps the
+registration and the tokens you sign from drifting apart. IOCloud fetches the keys
+from the issuer's origin plus `jwksPath` — a path under `/.well-known/`,
+`/.well-known/jwks.json` when omitted — and from nowhere else.
+
+`jwksUrl` is deprecated, with a one-time `DeprecationWarning`: the SDK sends only
+its path, so it must be on the issuer's own origin and carry no query or
+fragment, or `createIdentityProvider` throws a `TypeError` before any request.
+
+`listIdentityProviders()` reads back what IOCloud has stored: each provider's
+`issuerOrigin` and `jwksPath`, and its `jwksUrl`, derived from the two. Pass
+`allowJitTenants: true` as well to create tenants at their first login (see
+below).
 
 ### Give your frontend a subject token
 

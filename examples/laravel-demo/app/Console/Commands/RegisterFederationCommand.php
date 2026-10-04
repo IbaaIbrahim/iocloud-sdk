@@ -84,6 +84,7 @@ final class RegisterFederationCommand extends Command
     {
         $this->components->twoColumnDetail('Application', $provider->applicationUuid);
         $this->components->twoColumnDetail('Issuer', $provider->issuer);
+        $this->components->twoColumnDetail('JWKS path', $provider->jwksPath);
         $this->components->twoColumnDetail('JWKS URL', $provider->jwksUrl);
         $this->components->twoColumnDetail(
             'Requires verified email',

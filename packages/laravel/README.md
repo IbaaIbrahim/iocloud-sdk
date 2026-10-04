@@ -76,7 +76,8 @@ storage/iocloud-federation-private.key   chmod 0600 — the secret
 storage/iocloud-federation-public.key    chmod 0644 — for reference
 ```
 
-and prints the key id, the `jwks_url` to register, and the public key set. It
+and prints the key id, the JWKS URL to serve, the `jwks_path` to register, and
+the public key set. It
 refuses to overwrite existing keys without `--force`. Use `--show` to print the
 private key for a secret manager instead of writing it, or `--path=` to put it
 elsewhere.
@@ -111,9 +112,10 @@ use IOCloud\Laravel\Facades\IOCloud;
 Route::get('/.well-known/jwks.json', fn () => IOCloud::jwks());
 ```
 
-Laravel serializes the returned array as JSON. The path is yours — it only has to
-match the `jwks_url` you register below — so wrap it in whatever middleware,
-caching, or rate limiting you use for public endpoints.
+Laravel serializes the returned array as JSON. The path is yours, on the issuer's
+origin and under `/.well-known/` — it only has to match the `jwks_path` you
+register below — so wrap it in whatever middleware, caching, or rate limiting you
+use for public endpoints.
 
 ```jsonc
 // GET /.well-known/jwks.json
@@ -143,8 +145,9 @@ Two alternatives if you would rather not write that line:
 Route::get('/.well-known/jwks.json', IOCloud\Laravel\Http\Controllers\JwksController::class);
 ```
 
-`IOCloud::federationDetails()` returns the `issuer`, `audience`, `jwks_url`, and
-`kid` this application signs under — handy for a diagnostics page.
+`IOCloud::federationDetails()` returns the `issuer`, `audience`, `jwks_url` (where
+to serve it), `jwks_path` (what to register), and `kid` this application signs
+under — handy for a diagnostics page.
 
 ### 4. Register your issuer with IOCloud, once
 
@@ -159,10 +162,10 @@ $provider = IOCloud::createIdentityProvider(
     name: 'Acme Portal',
     issuer: $federation->requireIssuer(),
     allowedAudiences: [$federation->audience],
-    jwksUrl: $federation->jwksUrl(),
     requireEmailVerified: true,
     allowJitUsers: true,
     claimNames: $federation->claimNames,
+    jwksPath: $federation->jwksPath(),
 );
 
 // Give a tenant of that application the organisation id your tokens carry, or
@@ -180,10 +183,21 @@ of them logs in any of its users, so they must all sign the same tenant and user
 ids. A tenant's `externalId` is unique within its application; one another
 tenant holds is refused with `TENANT_EXTERNAL_ID_TAKEN`.
 
-Passing the config's `claimNames` and `jwksUrl()` is what keeps the registration
-and the tokens you sign from drifting apart. `listIdentityProviders()` reads back
-what IOCloud has stored. Pass `allowJitTenants: true` as well to create tenants at
-their first login (see below).
+Passing the config's `claimNames` and `jwksPath()` is what keeps the registration
+and the tokens you sign from drifting apart. IOCloud fetches the keys from the
+issuer's origin plus `jwksPath` — a path under `/.well-known/`,
+`/.well-known/jwks.json` when omitted — and from nowhere else.
+
+`$jwksUrl` is deprecated (an `E_USER_DEPRECATED` notice, which Laravel sends to
+its deprecations log channel when one is configured), and `$jwksPath` is the last
+parameter, so pass it by name. The SDK sends only the URL's path, so it must be on the issuer's own
+origin and carry no query or fragment, or `createIdentityProvider()` throws an
+`InvalidArgumentException` before any request.
+
+`listIdentityProviders()` reads back what IOCloud has stored: each provider's
+`issuerOrigin` and `jwksPath`, and its `jwksUrl`, derived from the two. Pass
+`allowJitTenants: true` as well to create tenants at their first login (see
+below).
 
 ### 5. Give your frontend a subject token
 

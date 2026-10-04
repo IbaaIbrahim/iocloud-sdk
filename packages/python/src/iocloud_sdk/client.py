@@ -1,9 +1,11 @@
+import warnings
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Optional, Sequence
 from uuid import UUID
 
 import httpx
 
+from ._jwks import resolve_jwks_path
 from .exceptions import (
     IOCloudAPIError,
     IOCloudAuthenticationError,
@@ -401,6 +403,7 @@ class IOCloudClient:
         application_uuid: UUID | str,
         name: str,
         issuer: str,
+        jwks_path: str | None = None,
         jwks_url: str | None = None,
         allowed_audiences: Sequence[str],
         allowed_algorithms: Sequence[str] = _DEFAULT_ALLOWED_ALGORITHMS,
@@ -417,10 +420,18 @@ class IOCloudClient:
         application may have several providers, and any of them logs in any of
         its users, so they must all sign the same tenant and user ids.
 
-        ``jwks_url`` defaults to ``<issuer>/.well-known/jwks.json``, the path
-        the SDK's JWKS document is meant to be served from. Pass the same
-        ``claim_names`` as the :class:`~iocloud_sdk.SubjectTokenIssuer` that
-        signs the tokens, so the two configurations cannot drift apart.
+        ``jwks_path`` is where the platform fetches the issuer's keys: a path
+        on the issuer's origin, under ``/.well-known/``. It defaults to
+        ``/.well-known/jwks.json``, the platform's default and the path the
+        SDK's JWKS document is meant to be served from; a
+        :class:`~iocloud_sdk.federation.SubjectTokenIssuer`'s is its
+        ``jwks_path``. Pass the same ``claim_names`` as the issuer that signs
+        the tokens, so the two configurations cannot drift apart.
+
+        ``jwks_url`` is deprecated: pass ``jwks_path``. It is still accepted,
+        and only its path is sent, so it must be on the issuer's own origin
+        and carry no query or fragment; anything else raises
+        :class:`ValueError` before any request, as does passing both.
 
         ``allow_jit_tenants`` lets a login whose tenant claim names no tenant
         of the application create it, from the
@@ -429,6 +440,14 @@ class IOCloudClient:
         created at login: the platform answers 422 to one without the other.
         """
         normalized_issuer = issuer.rstrip("/")
+        if jwks_url is not None:
+            warnings.warn(
+                "create_identity_provider(jwks_url=...) is deprecated: pass"
+                " jwks_path, the path on the issuer's origin, instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        resolved_jwks_path = resolve_jwks_path(normalized_issuer, jwks_path, jwks_url)
         claims = claim_names or SubjectTokenClaimNames()
         data = self._partner_request(
             "POST",
@@ -437,8 +456,7 @@ class IOCloudClient:
                 "application_uuid": str(application_uuid),
                 "name": name,
                 "issuer": normalized_issuer,
-                "jwks_url": jwks_url
-                or f"{normalized_issuer}/.well-known/jwks.json",
+                "jwks_path": resolved_jwks_path,
                 "allowed_audiences": list(allowed_audiences),
                 "allowed_algorithms": list(allowed_algorithms),
                 "token_max_age_seconds": token_max_age_seconds,
@@ -465,19 +483,25 @@ class IOCloudClient:
         """The public key set to publish at ``<issuer>/.well-known/jwks.json``.
 
         Return it straight from a route handler — this is the whole JWKS
-        endpoint. The path is yours to choose; it only has to match the
-        ``jwks_url`` registered with the platform. Contains public key material
-        only, and is safe to cache.
+        endpoint. The path is yours to choose, on the issuer's origin and
+        under ``/.well-known/``; it only has to match the ``jwks_path``
+        registered with the platform. Contains public key material only, and
+        is safe to cache.
         """
         return self._require_token_issuer("jwks").jwks()
 
     def federation_details(self) -> dict[str, str]:
-        """The issuer, audience, JWKS URL, and key id this client signs under."""
+        """The issuer, audience, JWKS URL and path, and key id this client signs under.
+
+        ``jwks_path`` is what to register with the platform; ``jwks_url`` is
+        where to serve :meth:`jwks`.
+        """
         token_issuer = self._require_token_issuer("federation_details")
         return {
             "issuer": token_issuer.issuer,
             "audience": token_issuer.audience,
             "jwks_url": token_issuer.jwks_url,
+            "jwks_path": token_issuer.jwks_path,
             "kid": token_issuer.signing_key.kid,
         }
 

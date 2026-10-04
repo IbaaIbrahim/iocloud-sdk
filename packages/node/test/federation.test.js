@@ -211,6 +211,17 @@ test("trailing slashes are stripped so iss matches byte for byte", () => {
   assert.equal(issuer.jwksUrl, `${ISSUER}/.well-known/jwks.json`);
 });
 
+test("the JWKS path is the path of the JWKS URL", () => {
+  // What the platform is told: it fetches the path from the issuer's origin.
+  const signingKey = FederationSigningKey.generate();
+
+  assert.equal(tokenIssuer(signingKey).jwksPath, "/.well-known/jwks.json");
+  assert.equal(
+    tokenIssuer(signingKey, { issuer: `${ISSUER}/` }).jwksPath,
+    "/.well-known/jwks.json",
+  );
+});
+
 test("claim names are configurable per provider", () => {
   const issuer = tokenIssuer(FederationSigningKey.generate()).withClaimNames({
     user: "user_id",

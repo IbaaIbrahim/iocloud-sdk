@@ -3,6 +3,59 @@
 All notable SDK changes are documented here. Each ecosystem can be released
 independently, so entries identify the affected packages.
 
+## Unreleased
+
+Identity providers register and read back `jwks_path`, for all three packages.
+The platform stores where it fetches an issuer's keys as `jwks_path`, a path on
+the issuer's own origin, and is dropping `jwks_url`: a request that carries it
+is a 422, and a response no longer contains it. Nothing is removed: `jwksUrl`
+stays on `createIdentityProvider`, deprecated, and on `IdentityProvider`,
+derived.
+
+### Added
+
+- `jwksPath` on `createIdentityProvider`: `jwks_path=` in Python, the
+  `jwksPath` option in Node, and in Laravel a `$jwksPath` parameter added last,
+  so pass it by name. Omitted, it is `/.well-known/jwks.json`, the platform's
+  default. The platform requires a document under `/.well-known/`.
+- `issuerOrigin` and `jwksPath` on `IdentityProvider` (`issuer_origin` and
+  `jwks_path` in Python). Code that builds a provider itself may leave them
+  out: they are derived from the issuer and the JWKS URL.
+- `jwksPath` on `SubjectTokenIssuer` (`jwks_path` in Python, `jwksPath()` in
+  Laravel) and Laravel's `FederationConfig::jwksPath()`: the path of the
+  issuer's own JWKS URL, which is what to register.
+- `jwks_path` (`jwksPath` in Node) in `federationDetails()`, beside `jwks_url`.
+
+### Changed
+
+- `createIdentityProvider` sends `jwks_path` and never `jwks_url`. With
+  neither argument it sends `/.well-known/jwks.json`, where it used to send
+  `<issuer>/.well-known/jwks.json`. The two differ only for an issuer with a
+  path, whose JWKS URL the platform refused already, as not under the
+  origin's `/.well-known/`: such an issuer now registers, and its keys must be
+  served from the origin's `/.well-known/jwks.json`.
+- `IdentityProvider.jwksUrl` is the response's `jwks_url` when it has one, and
+  `issuer_origin + jwks_path` otherwise. A provider without `jwks_url` used to
+  fail to parse — a `KeyError` in Python, a `TypeError` in Node, an undefined
+  array key in Laravel — and now parses.
+- Laravel's `iocloud:keys` prints the JWKS URL to serve and the `jwks_path` to
+  register, instead of a `jwks_url` to register.
+- The OpenAPI contract and the shared `identity-provider.json` fixture are the
+  platform's current shape: `issuer_origin` and `jwks_path`, no `jwks_url`. The
+  READMEs and the Laravel demo register `jwksPath`.
+
+### Deprecated
+
+- `jwksUrl` on `createIdentityProvider` (`jwks_url=` in Python, `$jwksUrl` in
+  Laravel, where it keeps its fifth position). It is still accepted: the SDK
+  sends its path, after checking that it is on the issuer's origin — scheme,
+  host and port, compared canonically — and carries no query or fragment.
+  Otherwise, or when `jwksPath` is passed too, it fails before any request:
+  `ValueError` in Python, `TypeError` in Node, `InvalidArgumentException` in
+  Laravel. Using it warns: a `DeprecationWarning` in Python, a one-time
+  `DeprecationWarning` (code `IOCLOUD_JWKS_URL`) in Node, and
+  `E_USER_DEPRECATED` in Laravel.
+
 ## 0.7.0 - 2026-10-01
 
 `federatedLogin` hands the subject token to your frontend instead of exchanging

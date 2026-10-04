@@ -6,6 +6,7 @@ use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
+use IOCloud\Laravel\Data\IdentityProvider;
 use IOCloud\Laravel\Data\SubjectTokenClaimNames;
 use IOCloud\Laravel\Data\TenantProfile;
 use IOCloud\Laravel\Exceptions\IOCloudFederationException;
@@ -14,6 +15,7 @@ use IOCloud\Laravel\Federation\FederationSigningKey;
 use IOCloud\Laravel\Federation\SubjectTokenIssuer;
 use IOCloud\Laravel\IOCloudClient;
 use IOCloud\Laravel\Tests\Support\JwsVerifier;
+use UnexpectedValueException;
 
 final class ClientFederationTest extends TestCase
 {
@@ -54,6 +56,17 @@ final class ClientFederationTest extends TestCase
         'created_at' => '2026-07-09T10:15:00Z',
     ];
 
+    /**
+     * A platform that stores the key-set location as issuer_origin + jwks_path
+     * and still sends the derived jwks_url beside them; the next one drops it.
+     */
+    private const CURRENT_PROVIDER_BODY = [
+        ...self::PROVIDER_BODY,
+        'issuer_origin' => 'https://portal.acme.example',
+        'jwks_path' => '/.well-known/jwks.json',
+        'allow_jit_tenants' => false,
+    ];
+
     private const SESSION_BODY = [
         'access_token' => 'platform-session-token',
         'issued_token_type' => 'urn:ietf:params:oauth:token-type:access_token',
@@ -64,7 +77,7 @@ final class ClientFederationTest extends TestCase
         'email' => 'user@customer.example',
     ];
 
-    public function test_it_derives_the_jwks_url_from_the_issuer(): void
+    public function test_it_sends_the_default_jwks_path_and_no_jwks_url(): void
     {
         Http::fake([
             'api.example.com/v1/partner/auth/token' => Http::response(self::PARTNER_TOKEN_BODY),
@@ -91,7 +104,8 @@ final class ClientFederationTest extends TestCase
 
             return $body['application_uuid'] === self::APPLICATION_UUID
                 && $body['issuer'] === 'https://portal.acme.example'
-                && $body['jwks_url'] === 'https://portal.acme.example/.well-known/jwks.json'
+                && $body['jwks_path'] === '/.well-known/jwks.json'
+                && ! array_key_exists('jwks_url', $body)
                 && $body['allowed_algorithms'] === ['RS256']
                 && $body['token_max_age_seconds'] === 900
                 && $body['require_email_verified'] === true
@@ -257,6 +271,182 @@ final class ClientFederationTest extends TestCase
         $this->assertCount(1, $providers);
         $this->assertSame('Acme Portal', $providers[0]->name);
         $this->assertSame(self::APPLICATION_UUID, $providers[0]->applicationUuid);
+    }
+
+    public function test_it_sends_the_jwks_path_it_is_given(): void
+    {
+        $this->fakeRegistration();
+
+        $this->client()->createIdentityProvider(
+            applicationUuid: self::APPLICATION_UUID,
+            name: 'Acme Portal',
+            issuer: 'https://portal.acme.example',
+            allowedAudiences: ['ai-ecosystem'],
+            jwksPath: '/.well-known/acme/keys.json',
+        );
+
+        $this->assertRegisteredJwksPath('/.well-known/acme/keys.json');
+    }
+
+    public function test_registering_a_subject_token_issuer_sends_its_jwks_path(): void
+    {
+        $this->fakeRegistration();
+        $tokenIssuer = new SubjectTokenIssuer(
+            signingKey: FederationSigningKey::generate(),
+            issuer: 'https://portal.acme.example',
+            audience: 'ai-ecosystem',
+        );
+
+        $this->client()->createIdentityProvider(
+            applicationUuid: self::APPLICATION_UUID,
+            name: 'Acme Portal',
+            issuer: $tokenIssuer->issuer(),
+            allowedAudiences: [$tokenIssuer->audience()],
+            claimNames: $tokenIssuer->claimNames(),
+            jwksPath: $tokenIssuer->jwksPath(),
+        );
+
+        $this->assertRegisteredJwksPath('/.well-known/jwks.json');
+    }
+
+    public function test_a_deprecated_jwks_url_on_the_issuers_origin_is_sent_as_its_path(): void
+    {
+        $this->fakeRegistration();
+
+        $this->client()->createIdentityProvider(
+            applicationUuid: self::APPLICATION_UUID,
+            name: 'Acme Portal',
+            issuer: 'https://portal.acme.example',
+            allowedAudiences: ['ai-ecosystem'],
+            // Same origin, spelled differently: case and the default port.
+            jwksUrl: 'HTTPS://Portal.Acme.Example:443/.well-known/acme/keys.json',
+        );
+
+        $this->assertRegisteredJwksPath('/.well-known/acme/keys.json');
+    }
+
+    public function test_a_positional_jwks_url_from_before_jwks_path_still_registers_as_its_path(): void
+    {
+        // What the README showed before $jwksPath, by position: it keeps working.
+        $this->fakeRegistration();
+        $tokenIssuer = new SubjectTokenIssuer(
+            signingKey: FederationSigningKey::generate(),
+            issuer: 'https://portal.acme.example',
+            audience: 'ai-ecosystem',
+        );
+
+        $this->client()->createIdentityProvider(
+            self::APPLICATION_UUID,
+            'Acme Portal',
+            $tokenIssuer->issuer(),
+            [$tokenIssuer->audience()],
+            $tokenIssuer->jwksUrl(),
+        );
+
+        $this->assertRegisteredJwksPath($tokenIssuer->jwksPath());
+    }
+
+    public function test_a_deprecated_jwks_url_off_the_issuers_origin_is_refused(): void
+    {
+        $offOrigin = [
+            'another host' => 'https://keys.example.net/.well-known/jwks.json',
+            'a subdomain' => 'https://keys.portal.acme.example/.well-known/jwks.json',
+            'another scheme' => 'http://portal.acme.example/.well-known/jwks.json',
+            'another port' => 'https://portal.acme.example:8443/.well-known/jwks.json',
+            'not a URL' => '/.well-known/jwks.json',
+        ];
+
+        foreach ($offOrigin as $case => $jwksUrl) {
+            $this->assertRefusedBeforeAnyRequest($jwksUrl, "issuer's origin", $case);
+        }
+    }
+
+    public function test_a_deprecated_jwks_url_with_a_query_or_a_fragment_is_refused(): void
+    {
+        foreach ([
+            'https://portal.acme.example/.well-known/jwks.json?tenant=acme',
+            'https://portal.acme.example/.well-known/jwks.json#keys',
+        ] as $jwksUrl) {
+            $this->assertRefusedBeforeAnyRequest($jwksUrl, 'query or a fragment', $jwksUrl);
+        }
+    }
+
+    public function test_jwks_path_and_jwks_url_together_are_refused(): void
+    {
+        Http::fake();
+
+        try {
+            $this->client()->createIdentityProvider(
+                applicationUuid: self::APPLICATION_UUID,
+                name: 'Acme Portal',
+                issuer: 'https://portal.acme.example',
+                allowedAudiences: ['ai-ecosystem'],
+                jwksUrl: 'https://portal.acme.example/.well-known/jwks.json',
+                jwksPath: '/.well-known/jwks.json',
+            );
+            $this->fail('Both a path and a URL were accepted.');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertStringContainsString('not both', $exception->getMessage());
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_the_contract_fixture_parses_without_jwks_url(): void
+    {
+        $fixture = json_decode(
+            (string) file_get_contents(__DIR__.'/../../../contracts/fixtures/identity-provider.json'),
+            true,
+            flags: JSON_THROW_ON_ERROR,
+        );
+        $this->assertArrayNotHasKey('jwks_url', $fixture['data']['provider']);
+
+        $provider = IdentityProvider::fromPayload($fixture['data']['provider']);
+
+        $this->assertSame('https://portal.acme.example', $provider->issuerOrigin);
+        $this->assertSame('/.well-known/jwks.json', $provider->jwksPath);
+        $this->assertSame('https://portal.acme.example/.well-known/jwks.json', $provider->jwksUrl);
+    }
+
+    public function test_a_platform_without_jwks_url_derives_it_from_origin_and_path(): void
+    {
+        $payload = self::CURRENT_PROVIDER_BODY;
+        unset($payload['jwks_url']);
+        $payload['jwks_path'] = '/.well-known/acme/keys.json';
+
+        $provider = IdentityProvider::fromPayload($payload);
+
+        $this->assertSame('https://portal.acme.example', $provider->issuerOrigin);
+        $this->assertSame('/.well-known/acme/keys.json', $provider->jwksPath);
+        $this->assertSame('https://portal.acme.example/.well-known/acme/keys.json', $provider->jwksUrl);
+    }
+
+    public function test_a_platform_that_still_sends_jwks_url_parses_unchanged(): void
+    {
+        $provider = IdentityProvider::fromPayload(self::CURRENT_PROVIDER_BODY);
+
+        $this->assertSame('https://portal.acme.example', $provider->issuerOrigin);
+        $this->assertSame('/.well-known/jwks.json', $provider->jwksPath);
+        $this->assertSame('https://portal.acme.example/.well-known/jwks.json', $provider->jwksUrl);
+    }
+
+    public function test_a_platform_from_before_jwks_path_derives_origin_and_path(): void
+    {
+        // PROVIDER_BODY carries jwks_url alone, as the SDK first knew it.
+        $provider = IdentityProvider::fromPayload(self::PROVIDER_BODY);
+
+        $this->assertSame('https://portal.acme.example', $provider->issuerOrigin);
+        $this->assertSame('/.well-known/jwks.json', $provider->jwksPath);
+        $this->assertSame(self::PROVIDER_BODY['jwks_url'], $provider->jwksUrl);
+    }
+
+    public function test_a_payload_naming_no_jwks_location_at_all_is_refused(): void
+    {
+        $payload = self::CURRENT_PROVIDER_BODY;
+        unset($payload['jwks_url'], $payload['jwks_path']);
+
+        $this->expectException(UnexpectedValueException::class);
+
+        IdentityProvider::fromPayload($payload);
     }
 
     public function test_it_posts_the_rfc_8693_form_grammar_without_a_partner_token(): void
@@ -518,6 +708,50 @@ final class ClientFederationTest extends TestCase
         $token = $this->app->make(IOCloudClient::class)->issuePartnerToken();
 
         $this->assertSame('partner-token', $token->accessToken);
+    }
+
+    private function fakeRegistration(): void
+    {
+        Http::fake([
+            'api.example.com/v1/partner/auth/token' => Http::response(self::PARTNER_TOKEN_BODY),
+            'api.example.com/v1/partner/federation/providers' => Http::response(
+                ['data' => ['provider' => self::PROVIDER_BODY]],
+                201,
+            ),
+        ]);
+    }
+
+    /** The platform takes `jwks_path` on the issuer's origin; a `jwks_url` is a 422. */
+    private function assertRegisteredJwksPath(string $jwksPath): void
+    {
+        Http::assertSent(function (Request $request) use ($jwksPath): bool {
+            if (! str_contains($request->url(), '/v1/partner/federation/providers')) {
+                return false;
+            }
+            $body = $request->data();
+
+            return ($body['jwks_path'] ?? null) === $jwksPath
+                && ! array_key_exists('jwks_url', $body);
+        });
+    }
+
+    private function assertRefusedBeforeAnyRequest(string $jwksUrl, string $reason, string $case): void
+    {
+        Http::fake();
+
+        try {
+            $this->client()->createIdentityProvider(
+                applicationUuid: self::APPLICATION_UUID,
+                name: 'Acme Portal',
+                issuer: 'https://portal.acme.example',
+                allowedAudiences: ['ai-ecosystem'],
+                jwksUrl: $jwksUrl,
+            );
+            $this->fail("{$case}: '{$jwksUrl}' was accepted.");
+        } catch (InvalidArgumentException $exception) {
+            $this->assertStringContainsString($reason, $exception->getMessage(), $case);
+        }
+        Http::assertNothingSent();
     }
 
     private function signingClient(FederationSigningKey $signingKey): IOCloudClient

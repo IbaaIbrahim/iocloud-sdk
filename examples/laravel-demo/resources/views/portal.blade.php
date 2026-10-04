@@ -67,6 +67,15 @@
                 </td>
             </tr>
             <tr>
+                <th>JWKS path (<code>jwks_path</code>)</th>
+                <td>
+                    <code class="wrap">{{ $federation['jwks_path'] }}</code>
+                    <br><span class="muted">
+                        What IOCloud is told to fetch from the issuer's origin.
+                    </span>
+                </td>
+            </tr>
+            <tr>
                 <th>Key id (<code>kid</code>)</th>
                 <td><code class="wrap">{{ $federation['kid'] }}</code></td>
             </tr>

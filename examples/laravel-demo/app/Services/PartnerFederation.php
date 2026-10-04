@@ -62,9 +62,10 @@ final readonly class PartnerFederation
      * Register this portal as a trusted issuer on IOCloud, for one application.
      *
      * A token it signs logs users into that application's tenants only. Issuer,
-     * JWKS URL, and claim names all come from the same configuration the SDK
+     * JWKS path, and claim names all come from the same configuration the SDK
      * signs and publishes with, so what is registered is exactly what this
-     * portal produces.
+     * portal produces. IOCloud fetches the keys from the issuer's origin and
+     * that path: the JWKS route in `routes/web.php`.
      */
     public function registerAsIdentityProvider(
         string $applicationUuid,
@@ -77,10 +78,10 @@ final readonly class PartnerFederation
             name: $name,
             issuer: $this->federation->requireIssuer(),
             allowedAudiences: [$this->federation->audience],
-            jwksUrl: $this->federation->jwksUrl(),
             requireEmailVerified: $requireEmailVerified,
             allowJitUsers: $allowJitUsers,
             claimNames: $this->federation->claimNames,
+            jwksPath: $this->federation->jwksPath(),
         );
     }
 
