@@ -165,6 +165,14 @@ class SubjectTokenIssuerTests(unittest.TestCase):
         self.assertEqual(issuer.issuer, ISSUER)
         self.assertEqual(issuer.jwks_url, f"{ISSUER}/.well-known/jwks.json")
 
+    def test_the_jwks_path_is_the_path_of_the_jwks_url(self) -> None:
+        # What the platform is told: it fetches the path from the issuer's origin.
+        self.assertEqual(token_issuer(self.key).jwks_path, "/.well-known/jwks.json")
+        self.assertEqual(
+            token_issuer(self.key, issuer="https://portal.acme.example/").jwks_path,
+            "/.well-known/jwks.json",
+        )
+
     def test_claim_names_are_configurable_per_provider(self) -> None:
         issuer = self.issuer.with_claim_names(
             SubjectTokenClaimNames(user="user_id", tenant="org_id")

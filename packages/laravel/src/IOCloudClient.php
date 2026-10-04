@@ -25,6 +25,7 @@ use IOCloud\Laravel\Exceptions\IOCloudAuthenticationException;
 use IOCloud\Laravel\Exceptions\IOCloudConfigurationException;
 use IOCloud\Laravel\Exceptions\IOCloudFederationException;
 use IOCloud\Laravel\Exceptions\IOCloudTokenExchangeException;
+use IOCloud\Laravel\Federation\JwksLocation;
 use IOCloud\Laravel\Federation\SubjectTokenIssuer;
 use InvalidArgumentException;
 
@@ -431,10 +432,19 @@ final class IOCloudClient
      * may have several providers, and any of them logs in any of its users, so
      * they must all sign the same tenant and user ids.
      *
-     * `$jwksUrl` defaults to `<issuer>/.well-known/jwks.json`, the path this
-     * package's JWKS route serves. Pass the same `$claimNames` as the
-     * {@see SubjectTokenIssuer} that signs the tokens, so the two configurations
-     * cannot drift apart.
+     * `$jwksPath` is where the platform fetches the issuer's keys: a path on the
+     * issuer's origin, under `/.well-known/`. It defaults to
+     * `/.well-known/jwks.json`, the platform's default and the path this
+     * package's JWKS route serves; a {@see SubjectTokenIssuer}'s is its
+     * `jwksPath()`, and the federation config's is
+     * `FederationConfig::jwksPath()`. Pass the same `$claimNames` as the
+     * issuer that signs the tokens, so the two configurations cannot drift
+     * apart.
+     *
+     * `$jwksUrl` is deprecated: pass `$jwksPath`, by name. It is still accepted,
+     * and only its path is sent, so it must be on the issuer's own origin and
+     * carry no query or fragment; anything else throws an
+     * {@see InvalidArgumentException} before any request, as does passing both.
      *
      * `$allowJitTenants` lets a login whose tenant claim names no tenant of the
      * application create it, from the `$tenant` passed to
@@ -450,6 +460,7 @@ final class IOCloudClient
         string $name,
         string $issuer,
         array $allowedAudiences,
+        /** @deprecated Pass $jwksPath instead. */
         ?string $jwksUrl = null,
         array $allowedAlgorithms = self::DEFAULT_ALLOWED_ALGORITHMS,
         int $tokenMaxAgeSeconds = self::DEFAULT_TOKEN_MAX_AGE_SECONDS,
@@ -459,15 +470,25 @@ final class IOCloudClient
         // Last, not beside $allowJitUsers: 0.6.0 adds it without moving
         // $claimNames for a caller that passes the arguments positionally.
         bool $allowJitTenants = false,
+        // Last for the same reason; $jwksUrl keeps its place, deprecated.
+        ?string $jwksPath = null,
     ): IdentityProvider {
         $normalizedIssuer = rtrim($issuer, '/');
+        if ($jwksUrl !== null) {
+            @trigger_error(
+                'createIdentityProvider($jwksUrl) is deprecated: pass $jwksPath, the path'
+                .' on the issuer\'s origin, instead.',
+                E_USER_DEPRECATED,
+            );
+        }
+        $resolvedJwksPath = JwksLocation::resolvePath($normalizedIssuer, $jwksPath, $jwksUrl);
         $claims = $claimNames ?? new SubjectTokenClaimNames();
 
         $data = $this->partnerRequest('POST', '/v1/partner/federation/providers', [
             'application_uuid' => $applicationUuid,
             'name' => $name,
             'issuer' => $normalizedIssuer,
-            'jwks_url' => $jwksUrl ?? $normalizedIssuer.'/.well-known/jwks.json',
+            'jwks_path' => $resolvedJwksPath,
             'allowed_audiences' => $allowedAudiences,
             'allowed_algorithms' => $allowedAlgorithms,
             'token_max_age_seconds' => $tokenMaxAgeSeconds,
@@ -507,8 +528,9 @@ final class IOCloudClient
      *
      *     Route::get('/.well-known/jwks.json', fn () => IOCloud::jwks());
      *
-     * The path is yours to choose; it only has to match the `jwks_url` registered
-     * with IOCloud. Contains public key material only, and is safe to cache.
+     * The path is yours to choose, on the issuer's origin and under
+     * `/.well-known/`; it only has to match the `jwks_path` registered with
+     * IOCloud. Contains public key material only, and is safe to cache.
      *
      * @return array{keys: list<array<string, string>>}
      */
@@ -518,12 +540,13 @@ final class IOCloudClient
     }
 
     /**
-     * The issuer URL and JWKS URL this client signs and publishes under.
+     * The issuer URL, JWKS URL and path this client signs and publishes under.
      *
      * Useful for a diagnostics page, and for registering the provider without
-     * repeating the values by hand.
+     * repeating the values by hand: `jwks_path` is what to register, `jwks_url`
+     * where {@see jwks()} is served.
      *
-     * @return array{issuer: string, audience: string, jwks_url: string, kid: string}
+     * @return array{issuer: string, audience: string, jwks_url: string, jwks_path: string, kid: string}
      */
     public function federationDetails(): array
     {
@@ -533,6 +556,7 @@ final class IOCloudClient
             'issuer' => $tokenIssuer->issuer(),
             'audience' => $tokenIssuer->audience(),
             'jwks_url' => $tokenIssuer->jwksUrl(),
+            'jwks_path' => $tokenIssuer->jwksPath(),
             'kid' => $tokenIssuer->signingKey()->kid(),
         ];
     }

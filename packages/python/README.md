@@ -124,8 +124,8 @@ and a published JWKS always matches the tokens you sign.
 ### Publish the JWKS from your own route
 
 `signing_key.jwks()` — or `client.jwks()` once a token issuer is configured —
-returns the document. Route it wherever you like; the path only has to match the
-`jwks_url` you register. With FastAPI:
+returns the document. Route it on the issuer's origin, under `/.well-known/`;
+the path only has to match the `jwks_path` you register. With FastAPI:
 
 ```python
 @app.get("/.well-known/jwks.json")
@@ -142,8 +142,8 @@ def jwks() -> dict:
 ```
 
 Public key material only — safe to serve publicly and to cache.
-`client.federation_details()` returns the `issuer`, `audience`, `jwks_url`, and
-`kid` in use.
+`client.federation_details()` returns the `issuer`, `audience`, `jwks_url` (where
+to serve it), `jwks_path` (what to register), and `kid` in use.
 
 ### Register the issuer, once
 
@@ -170,7 +170,7 @@ provider = client.create_identity_provider(
     name="Acme Portal",
     issuer=token_issuer.issuer,
     allowed_audiences=[token_issuer.audience],
-    jwks_url=token_issuer.jwks_url,
+    jwks_path=token_issuer.jwks_path,
     require_email_verified=True,
     allow_jit_users=True,
     claim_names=token_issuer.claim_names,
@@ -186,9 +186,17 @@ application's tenants only. An application may have several providers, and any
 of them logs in any of its users, so they must all sign the same tenant and user
 ids.
 
-Passing the issuer's own `jwks_url` and `claim_names` is what keeps the
-registration and the tokens you sign from drifting apart.
-`list_identity_providers()` reads back what IOCloud has stored. Pass
+Passing the issuer's own `jwks_path` and `claim_names` is what keeps the
+registration and the tokens you sign from drifting apart. IOCloud fetches the
+keys from the issuer's origin plus `jwks_path` — a path under `/.well-known/`,
+`/.well-known/jwks.json` when omitted — and from nowhere else.
+
+`jwks_url=` is deprecated, with a `DeprecationWarning`: the SDK sends only its
+path, so it must be on the issuer's own origin and carry no query or fragment,
+or `create_identity_provider` raises `ValueError` before any request.
+
+`list_identity_providers()` reads back what IOCloud has stored: each provider's
+`issuer_origin` and `jwks_path`, and its `jwks_url`, derived from the two. Pass
 `allow_jit_tenants=True` as well to create tenants at their first login
 (see below).
 

@@ -15,6 +15,7 @@ import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from .exceptions import IOCloudFederationError
@@ -238,8 +239,16 @@ class SubjectTokenIssuer:
 
     @property
     def jwks_url(self) -> str:
-        """Where the platform must be told to fetch this issuer's keys."""
+        """Where this issuer serves its keys: the URL :meth:`jwks` is published at."""
         return f"{self._issuer}/.well-known/jwks.json"
+
+    @property
+    def jwks_path(self) -> str:
+        """:attr:`jwks_url`'s path: what the platform is told to fetch from the issuer's origin.
+
+        Pass it as ``create_identity_provider(jwks_path=...)``.
+        """
+        return urlsplit(self.jwks_url).path
 
     def jwks(self) -> dict[str, list[dict[str, str]]]:
         """The JWKS document to serve at :attr:`jwks_url`."""

@@ -45,6 +45,7 @@ final class FederationConfigTest extends PHPUnitTestCase
             'https://portal.acme.example/.well-known/jwks.json',
             $config->jwksUrl(),
         );
+        $this->assertSame('/.well-known/jwks.json', $config->jwksPath());
     }
 
     public function test_an_inline_key_wins_over_a_path(): void

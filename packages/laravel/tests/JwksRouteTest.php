@@ -99,6 +99,7 @@ final class JwksRouteTest extends TestCase
             'https://portal.acme.example/.well-known/jwks.json',
             $details['jwks_url'],
         );
+        $this->assertSame('/.well-known/jwks.json', $details['jwks_path']);
         $this->assertSame($this->signingKey->kid(), $details['kid']);
     }
 

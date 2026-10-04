@@ -1,7 +1,10 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID
+
+from ._jwks import origin_of
 
 
 def _datetime(value: str | datetime) -> datetime:
@@ -199,6 +202,10 @@ class IdentityProvider:
     to the platform's token validator; a subject token overrides none of them.
     ``allow_jit_tenants`` lets a login create its tenant from the token's
     ``tenant_profile`` claim, and needs ``allow_jit_users``.
+
+    The platform fetches the issuer's keys from ``issuer_origin + jwks_path``
+    and from nowhere else. ``jwks_url`` is that URL, kept for code that reads
+    it: the platform no longer sends it, so it is derived from the other two.
     """
 
     uuid: UUID
@@ -220,15 +227,34 @@ class IdentityProvider:
     # Last and defaulted so that code building a provider itself, such as a
     # test double, keeps working. False from a platform that predates it.
     allow_jit_tenants: bool = False
+    # Defaulted for the same reason. Left empty, each is derived: the origin
+    # from ``issuer``, the path from ``jwks_url``.
+    issuer_origin: str = ""
+    jwks_path: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.issuer_origin:
+            try:
+                object.__setattr__(self, "issuer_origin", origin_of(self.issuer))
+            except ValueError:
+                pass
+        if not self.jwks_path:
+            object.__setattr__(self, "jwks_path", urlsplit(self.jwks_url).path)
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "IdentityProvider":
+        jwks_url = payload.get("jwks_url")
+        if jwks_url is None:
+            # What the platform fetches; it stopped sending the URL itself.
+            jwks_url = f"{payload['issuer_origin']}{payload['jwks_path']}"
         return cls(
             uuid=UUID(str(payload["uuid"])),
             application_uuid=UUID(str(payload["application_uuid"])),
             name=str(payload["name"]),
             issuer=str(payload["issuer"]),
-            jwks_url=str(payload["jwks_url"]),
+            issuer_origin=str(payload.get("issuer_origin") or ""),
+            jwks_path=str(payload.get("jwks_path") or ""),
+            jwks_url=str(jwks_url),
             allowed_audiences=tuple(
                 str(audience) for audience in payload["allowed_audiences"]
             ),

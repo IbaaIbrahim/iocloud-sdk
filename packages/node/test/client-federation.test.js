@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -82,7 +83,7 @@ function recordingFetch(responses) {
 
 const partnerTokenResponse = () => Response.json(PARTNER_TOKEN_BODY);
 
-test("createIdentityProvider derives the JWKS URL from the issuer", async () => {
+test("createIdentityProvider sends the default jwks_path and no jwks_url", async () => {
   const { fetch, requestTo } = recordingFetch({
     "/v1/partner/auth/token": partnerTokenResponse,
     "/v1/partner/federation/providers": () =>
@@ -108,10 +109,8 @@ test("createIdentityProvider derives the JWKS URL from the issuer", async () => 
   const body = JSON.parse(sent.body);
   assert.equal(body.application_uuid, APPLICATION_UUID);
   assert.equal(body.issuer, "https://portal.acme.example");
-  assert.equal(
-    body.jwks_url,
-    "https://portal.acme.example/.well-known/jwks.json",
-  );
+  assert.equal(body.jwks_path, "/.well-known/jwks.json");
+  assert.equal("jwks_url" in body, false);
   assert.deepEqual(body.allowed_algorithms, ["RS256"]);
   assert.equal(body.token_max_age_seconds, 900);
   assert.equal(body.require_email_verified, true);
@@ -254,6 +253,231 @@ test("listIdentityProviders sends a GET with no request body", async () => {
   assert.equal(providers[0].applicationUuid, APPLICATION_UUID);
 });
 
+/** A client whose provider registration is recorded, plus the body it sent. */
+function registeringClient() {
+  const recorder = recordingFetch({
+    "/v1/partner/auth/token": partnerTokenResponse,
+    "/v1/partner/federation/providers": () =>
+      Response.json({ data: { provider: PROVIDER_BODY } }, { status: 201 }),
+  });
+  const client = new IOCloudClient({
+    clientId: "client-id",
+    clientSecret: "client-secret",
+    baseUrl: BASE_URL,
+    fetch: recorder.fetch,
+  });
+  const sentBody = () =>
+    JSON.parse(recorder.requestTo("/v1/partner/federation/providers").body);
+  return { client, sentBody, requests: recorder.requests };
+}
+
+const REGISTRATION = {
+  applicationUuid: APPLICATION_UUID,
+  name: "Acme Portal",
+  issuer: "https://portal.acme.example",
+  allowedAudiences: ["ai-ecosystem"],
+};
+
+test("createIdentityProvider sends the jwksPath it is given", async () => {
+  const { client, sentBody } = registeringClient();
+
+  await client.createIdentityProvider({
+    ...REGISTRATION,
+    jwksPath: "/.well-known/acme/keys.json",
+  });
+
+  const body = sentBody();
+  assert.equal(body.jwks_path, "/.well-known/acme/keys.json");
+  assert.equal("jwks_url" in body, false);
+});
+
+test("registering a SubjectTokenIssuer sends its jwksPath", async () => {
+  const tokenIssuer = new SubjectTokenIssuer({
+    signingKey: FederationSigningKey.generate(),
+    issuer: "https://portal.acme.example",
+    audience: "ai-ecosystem",
+  });
+  const { client, sentBody } = registeringClient();
+
+  await client.createIdentityProvider({
+    applicationUuid: APPLICATION_UUID,
+    name: "Acme Portal",
+    issuer: tokenIssuer.issuer,
+    jwksPath: tokenIssuer.jwksPath,
+    allowedAudiences: [tokenIssuer.audience],
+    claimNames: tokenIssuer.claimNames,
+  });
+
+  const body = sentBody();
+  assert.equal(body.jwks_path, "/.well-known/jwks.json");
+  assert.equal("jwks_url" in body, false);
+});
+
+test("a deprecated jwksUrl on the issuer's origin is sent as its path", async () => {
+  const { client, sentBody } = registeringClient();
+
+  await client.createIdentityProvider({
+    ...REGISTRATION,
+    // Same origin, spelled differently: case and the default port.
+    jwksUrl: "HTTPS://Portal.Acme.Example:443/.well-known/acme/keys.json",
+  });
+
+  const body = sentBody();
+  assert.equal(body.jwks_path, "/.well-known/acme/keys.json");
+  assert.equal("jwks_url" in body, false);
+});
+
+test("a SubjectTokenIssuer's jwksUrl still registers as its path", async () => {
+  // What the README showed before jwksPath: it keeps working, deprecated.
+  const tokenIssuer = new SubjectTokenIssuer({
+    signingKey: FederationSigningKey.generate(),
+    issuer: "https://portal.acme.example",
+    audience: "ai-ecosystem",
+  });
+  const { client, sentBody } = registeringClient();
+
+  await client.createIdentityProvider({
+    ...REGISTRATION,
+    issuer: tokenIssuer.issuer,
+    jwksUrl: tokenIssuer.jwksUrl,
+  });
+
+  const body = sentBody();
+  assert.equal(body.jwks_path, tokenIssuer.jwksPath);
+  assert.equal("jwks_url" in body, false);
+});
+
+test("a deprecated jwksUrl off the issuer's origin is refused before any request", async () => {
+  const offOrigin = [
+    "https://keys.example.net/.well-known/jwks.json",
+    "https://keys.portal.acme.example/.well-known/jwks.json",
+    "http://portal.acme.example/.well-known/jwks.json",
+    "https://portal.acme.example:8443/.well-known/jwks.json",
+    "/.well-known/jwks.json",
+  ];
+  for (const jwksUrl of offOrigin) {
+    const { client, requests } = registeringClient();
+
+    await assert.rejects(
+      client.createIdentityProvider({ ...REGISTRATION, jwksUrl }),
+      (error) => error instanceof TypeError && /issuer's origin/.test(error.message),
+      jwksUrl,
+    );
+    assert.equal(requests.length, 0, jwksUrl);
+  }
+});
+
+test("a deprecated jwksUrl with a query or a fragment is refused", async () => {
+  for (const jwksUrl of [
+    "https://portal.acme.example/.well-known/jwks.json?tenant=acme",
+    "https://portal.acme.example/.well-known/jwks.json#keys",
+  ]) {
+    const { client, requests } = registeringClient();
+
+    await assert.rejects(
+      client.createIdentityProvider({ ...REGISTRATION, jwksUrl }),
+      (error) => error instanceof TypeError && /query or a fragment/.test(error.message),
+      jwksUrl,
+    );
+    assert.equal(requests.length, 0, jwksUrl);
+  }
+});
+
+test("jwksPath and jwksUrl together are refused", async () => {
+  const { client, requests } = registeringClient();
+
+  await assert.rejects(
+    client.createIdentityProvider({
+      ...REGISTRATION,
+      jwksPath: "/.well-known/jwks.json",
+      jwksUrl: "https://portal.acme.example/.well-known/jwks.json",
+    }),
+    (error) => error instanceof TypeError && /not both/.test(error.message),
+  );
+  assert.equal(requests.length, 0);
+});
+
+/** Parse one provider payload the way the client does: through a listing. */
+async function parsedProvider(payload) {
+  const { fetch } = recordingFetch({
+    "/v1/partner/auth/token": partnerTokenResponse,
+    "/v1/partner/federation/providers": () =>
+      Response.json({ data: { providers: [payload] } }),
+  });
+  const client = new IOCloudClient({
+    clientId: "client-id",
+    clientSecret: "client-secret",
+    baseUrl: BASE_URL,
+    fetch,
+  });
+  const [provider] = await client.listIdentityProviders();
+  return provider;
+}
+
+// A platform that stores the key-set location as issuer_origin + jwks_path and
+// still sends the derived jwks_url beside them; the next one drops jwks_url.
+const CURRENT_PROVIDER_BODY = {
+  ...PROVIDER_BODY,
+  issuer_origin: "https://portal.acme.example",
+  jwks_path: "/.well-known/jwks.json",
+  allow_jit_tenants: false,
+};
+
+test("the contract fixture parses without jwks_url", async () => {
+  const fixture = JSON.parse(
+    await readFile(
+      new URL("../../../contracts/fixtures/identity-provider.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  assert.equal("jwks_url" in fixture.data.provider, false);
+
+  const provider = await parsedProvider(fixture.data.provider);
+
+  assert.equal(provider.issuerOrigin, "https://portal.acme.example");
+  assert.equal(provider.jwksPath, "/.well-known/jwks.json");
+  assert.equal(provider.jwksUrl, "https://portal.acme.example/.well-known/jwks.json");
+});
+
+test("a platform without jwks_url derives it from origin and path", async () => {
+  const { jwks_url: _dropped, ...payload } = CURRENT_PROVIDER_BODY;
+
+  const provider = await parsedProvider({
+    ...payload,
+    jwks_path: "/.well-known/acme/keys.json",
+  });
+
+  assert.equal(provider.issuerOrigin, "https://portal.acme.example");
+  assert.equal(provider.jwksPath, "/.well-known/acme/keys.json");
+  assert.equal(
+    provider.jwksUrl,
+    "https://portal.acme.example/.well-known/acme/keys.json",
+  );
+});
+
+test("a platform that still sends jwks_url parses unchanged", async () => {
+  const provider = await parsedProvider(CURRENT_PROVIDER_BODY);
+
+  assert.equal(provider.issuerOrigin, "https://portal.acme.example");
+  assert.equal(provider.jwksPath, "/.well-known/jwks.json");
+  assert.equal(provider.jwksUrl, "https://portal.acme.example/.well-known/jwks.json");
+});
+
+test("a platform from before jwks_path derives origin and path", async () => {
+  // PROVIDER_BODY carries jwks_url alone, as the SDK first knew it.
+  const provider = await parsedProvider(PROVIDER_BODY);
+
+  assert.equal(provider.issuerOrigin, "https://portal.acme.example");
+  assert.equal(provider.jwksPath, "/.well-known/jwks.json");
+  assert.equal(provider.jwksUrl, PROVIDER_BODY.jwks_url);
+});
+
+test("a payload naming no JWKS location at all is refused", async () => {
+  const { jwks_url: _url, jwks_path: _path, ...payload } = CURRENT_PROVIDER_BODY;
+
+  await assert.rejects(parsedProvider(payload), TypeError);
+});
+
 test("exchangeSubjectToken posts the RFC 8693 form grammar unauthenticated", async () => {
   const { fetch, requestTo } = recordingFetch({
     "/v1/federation/token": () => Response.json(SESSION_BODY),
@@ -360,6 +584,7 @@ test("jwks() returns the document a route can publish", () => {
     issuer: "https://portal.acme.example",
     audience: "ai-ecosystem",
     jwksUrl: "https://portal.acme.example/.well-known/jwks.json",
+    jwksPath: "/.well-known/jwks.json",
     kid: signingKey.kid,
   });
 });

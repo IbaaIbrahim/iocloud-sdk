@@ -94,6 +94,12 @@ final class SubjectTokenIssuerTest extends PHPUnitTestCase
         $this->assertSame(self::ISSUER.'/.well-known/jwks.json', $issuer->jwksUrl());
     }
 
+    public function test_the_jwks_path_is_the_path_of_the_jwks_url(): void
+    {
+        // What the platform is told: it fetches the path from the issuer's origin.
+        $this->assertSame('/.well-known/jwks.json', $this->issuer->jwksPath());
+    }
+
     public function test_claim_names_are_configurable_per_provider(): void
     {
         $issuer = $this->issuer->withClaimNames(

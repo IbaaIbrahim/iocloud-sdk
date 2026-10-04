@@ -75,10 +75,19 @@ final class SubjectTokenIssuer
         return $this->signingKey;
     }
 
-    /** Where the platform must be told to fetch this issuer's keys. */
+    /** Where this issuer serves its keys: the URL {@see jwks()} is published at. */
     public function jwksUrl(): string
     {
         return $this->issuer.'/.well-known/jwks.json';
+    }
+
+    /**
+     * {@see jwksUrl()}'s path: what the platform is told to fetch from the
+     * issuer's origin. Pass it as `createIdentityProvider(jwksPath: ...)`.
+     */
+    public function jwksPath(): string
+    {
+        return JwksLocation::pathOf($this->jwksUrl());
     }
 
     /**

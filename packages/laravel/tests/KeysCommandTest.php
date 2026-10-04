@@ -76,6 +76,7 @@ final class KeysCommandTest extends TestCase
     {
         $this->artisan('iocloud:keys', ['--path' => $this->privateKeyPath])
             ->expectsOutputToContain('Key id (kid)')
+            ->expectsOutputToContain('Register this jwks_path')
             ->expectsOutputToContain('IOCloud::jwks()')
             ->expectsOutputToContain('"kty": "RSA"')
             ->assertSuccessful();

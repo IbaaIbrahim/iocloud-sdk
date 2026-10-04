@@ -113,6 +113,14 @@ export interface IdentityProvider {
   applicationUuid: string;
   name: string;
   issuer: string;
+  /** The issuer's origin: the only host the platform fetches its keys from. */
+  issuerOrigin: string;
+  /** Where on `issuerOrigin` the platform fetches the issuer's keys. */
+  jwksPath: string;
+  /**
+   * `issuerOrigin + jwksPath`, the URL the platform fetches. Kept for code that
+   * reads it; the platform no longer sends it, so it is derived.
+   */
   jwksUrl: string;
   allowedAudiences: string[];
   allowedAlgorithms: string[];
@@ -177,7 +185,17 @@ export interface CreateIdentityProviderInput {
   applicationUuid: string;
   name: string;
   issuer: string;
-  /** Defaults to `<issuer>/.well-known/jwks.json`. */
+  /**
+   * Where the platform fetches the issuer's keys: a path on the issuer's
+   * origin, under `/.well-known/`. Defaults to `/.well-known/jwks.json`, the
+   * platform's default; a `SubjectTokenIssuer`'s is its `jwksPath`.
+   */
+  jwksPath?: string;
+  /**
+   * @deprecated Pass `jwksPath`. Only this URL's path is sent, so it must be on
+   * the issuer's own origin and carry no query or fragment; anything else, or
+   * passing both, throws a `TypeError` before any request.
+   */
   jwksUrl?: string;
   allowedAudiences: string[];
   allowedAlgorithms?: string[];

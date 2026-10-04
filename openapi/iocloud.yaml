@@ -95,7 +95,9 @@ paths:
           description: >-
             The request is invalid (VALIDATION_ERROR), for example
             allow_jit_tenants true with allow_jit_users false: the users of a
-            tenant created at login can only be created at login.
+            tenant created at login can only be created at login; a jwks_path
+            that is not a document under /.well-known/; or a field the request
+            does not name, jwks_url included.
           content:
             application/json:
               schema:
@@ -1117,7 +1119,11 @@ components:
               description: Null when this call provisioned nothing.
     CreateIdentityProviderRequest:
       type: object
-      required: [application_uuid, name, issuer, jwks_url, allowed_audiences]
+      required: [application_uuid, name, issuer, allowed_audiences]
+      additionalProperties: false
+      description: >-
+        A field the request does not name is a 422, jwks_url included: the
+        platform takes the key-set location as jwks_path only.
       properties:
         application_uuid:
           type: string
@@ -1131,11 +1137,16 @@ components:
           maxLength: 500
           description: >-
             Compared byte-for-byte against the subject token's iss claim.
-        jwks_url:
+        jwks_path:
           type: string
+          minLength: 1
           maxLength: 500
+          default: /.well-known/jwks.json
           description: >-
-            The only URL the platform fetches this issuer's signing keys from.
+            Where on the issuer's origin the platform fetches this issuer's
+            signing keys: issuer_origin + jwks_path is the only URL it fetches
+            them from. A document under /.well-known/ (RFC 8615), with no
+            query, fragment, '..', '//' or backslash.
         allowed_audiences:
           type: array
           minItems: 1
@@ -1171,7 +1182,8 @@ components:
         - application_uuid
         - name
         - issuer
-        - jwks_url
+        - issuer_origin
+        - jwks_path
         - allowed_audiences
         - allowed_algorithms
         - token_max_age_seconds
@@ -1188,7 +1200,21 @@ components:
         application_uuid: { type: string, format: uuid }
         name: { type: string }
         issuer: { type: string }
-        jwks_url: { type: string }
+        issuer_origin:
+          type: string
+          description: >-
+            The issuer's canonical origin (scheme://host[:port]): the only
+            host the platform fetches its keys from.
+        jwks_path:
+          type: string
+          description: Where on issuer_origin the platform fetches the keys.
+        jwks_url:
+          type: string
+          deprecated: true
+          description: >-
+            issuer_origin + jwks_path. No longer sent; an older platform sent
+            it beside the two. The SDKs still expose it, derived from them
+            when absent.
         allowed_audiences:
           type: array
           items: { type: string }
@@ -1420,7 +1446,7 @@ components:
       type: object
       description: >-
         The document a partner serves at <issuer>/.well-known/jwks.json, which
-        the platform fetches from the provider row's jwks_url.
+        the platform fetches from the provider's issuer_origin + jwks_path.
       required: [keys]
       properties:
         keys:

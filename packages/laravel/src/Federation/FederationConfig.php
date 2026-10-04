@@ -108,10 +108,19 @@ final readonly class FederationConfig
         return $contents;
     }
 
-    /** Where the platform must be told to fetch this issuer's keys. */
+    /** Where this application serves its keys: the URL `IOCloud::jwks()` is published at. */
     public function jwksUrl(): string
     {
         return $this->requireIssuer().'/.well-known/jwks.json';
+    }
+
+    /**
+     * {@see jwksUrl()}'s path: what the platform is told to fetch from the
+     * issuer's origin. Pass it as `createIdentityProvider(jwksPath: ...)`.
+     */
+    public function jwksPath(): string
+    {
+        return JwksLocation::pathOf($this->jwksUrl());
     }
 
     /** 'inline', 'file', or null when no key is configured. */
