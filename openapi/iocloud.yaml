@@ -199,6 +199,268 @@ paths:
                 $ref: '#/components/schemas/Error'
         default:
           $ref: '#/components/responses/ApiError'
+  /v1/partner/tenants/{tenant_uuid}/standing-context:
+    description: >-
+      The workspace's standing context (ADR-021): instructions and memories
+      every run of the tenant's users is told.
+    parameters:
+      - $ref: '#/components/parameters/TenantUuid'
+    get:
+      operationId: listStandingEntries
+      summary: List a tenant's own standing entries, oldest first.
+      description: >-
+        Expired entries are included, flagged expired; retired ones only with
+        include_retired=true. The SDKs read every page, 100 at a time.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IncludeRetired'
+        - $ref: '#/components/parameters/StandingEntriesLimit'
+        - $ref: '#/components/parameters/StandingEntriesOffset'
+      responses:
+        '200':
+          description: Entries listed (STANDING_CONTEXT_LISTED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandingEntryListResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '404':
+          $ref: '#/components/responses/StandingTenantNotFound'
+        default:
+          $ref: '#/components/responses/ApiError'
+    post:
+      operationId: createStandingEntry
+      summary: Save an instruction or memory every run of the tenant's users is told.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateStandingEntryRequest'
+      responses:
+        '201':
+          description: Entry saved (STANDING_ENTRY_CREATED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandingEntryResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '404':
+          $ref: '#/components/responses/StandingTenantNotFound'
+        '409':
+          $ref: '#/components/responses/StandingContextFull'
+        '422':
+          $ref: '#/components/responses/StandingEntryInvalid'
+        default:
+          $ref: '#/components/responses/ApiError'
+  /v1/partner/tenants/{tenant_uuid}/standing-context/{entry_uuid}:
+    parameters:
+      - $ref: '#/components/parameters/TenantUuid'
+      - $ref: '#/components/parameters/EntryUuid'
+    get:
+      operationId: getStandingEntry
+      summary: Read one standing entry.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Entry read (STANDING_ENTRY_RETRIEVED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandingEntryResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '404':
+          $ref: '#/components/responses/StandingEntryNotFound'
+        default:
+          $ref: '#/components/responses/ApiError'
+    patch:
+      operationId: updateStandingEntry
+      summary: Change an entry's text or expiry, or retire it.
+      description: >-
+        Omitted fields are left unchanged. "expires_on": null clears the
+        expiry; omitting the key keeps it.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateStandingEntryRequest'
+      responses:
+        '200':
+          description: Entry changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandingEntryResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '404':
+          $ref: '#/components/responses/StandingEntryNotFound'
+        '409':
+          $ref: '#/components/responses/StandingContextFull'
+        '422':
+          $ref: '#/components/responses/StandingEntryInvalid'
+        default:
+          $ref: '#/components/responses/ApiError'
+    delete:
+      operationId: deleteStandingEntry
+      summary: Delete a standing entry for good.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Entry deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandingEntryDeletedResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '404':
+          $ref: '#/components/responses/StandingEntryNotFound'
+        default:
+          $ref: '#/components/responses/ApiError'
+  /v1/partner/tenants/{tenant_uuid}/users/{user_uuid}/standing-context:
+    description: >-
+      One user's personal standing context: the same endpoints over that
+      user's entries, told in that user's runs only, after the workspace's.
+    parameters:
+      - $ref: '#/components/parameters/TenantUuid'
+      - $ref: '#/components/parameters/UserUuid'
+    get:
+      operationId: listUserStandingEntries
+      summary: List one user's personal standing entries, oldest first.
+      description: >-
+        Expired entries are included, flagged expired; retired ones only with
+        include_retired=true. The SDKs read every page, 100 at a time.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IncludeRetired'
+        - $ref: '#/components/parameters/StandingEntriesLimit'
+        - $ref: '#/components/parameters/StandingEntriesOffset'
+      responses:
+        '200':
+          description: Entries listed (STANDING_CONTEXT_LISTED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandingEntryListResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '404':
+          $ref: '#/components/responses/StandingUserNotFound'
+        default:
+          $ref: '#/components/responses/ApiError'
+    post:
+      operationId: createUserStandingEntry
+      summary: Save an instruction or memory every run of that user is told.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateStandingEntryRequest'
+      responses:
+        '201':
+          description: Entry saved (STANDING_ENTRY_CREATED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandingEntryResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '404':
+          $ref: '#/components/responses/StandingUserNotFound'
+        '409':
+          $ref: '#/components/responses/StandingContextFull'
+        '422':
+          $ref: '#/components/responses/StandingEntryInvalid'
+        default:
+          $ref: '#/components/responses/ApiError'
+  /v1/partner/tenants/{tenant_uuid}/users/{user_uuid}/standing-context/{entry_uuid}:
+    parameters:
+      - $ref: '#/components/parameters/TenantUuid'
+      - $ref: '#/components/parameters/UserUuid'
+      - $ref: '#/components/parameters/EntryUuid'
+    get:
+      operationId: getUserStandingEntry
+      summary: Read one standing entry.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Entry read (STANDING_ENTRY_RETRIEVED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandingEntryResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '404':
+          $ref: '#/components/responses/StandingEntryNotFound'
+        default:
+          $ref: '#/components/responses/ApiError'
+    patch:
+      operationId: updateUserStandingEntry
+      summary: Change an entry's text or expiry, or retire it.
+      description: >-
+        Omitted fields are left unchanged. "expires_on": null clears the
+        expiry; omitting the key keeps it.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateStandingEntryRequest'
+      responses:
+        '200':
+          description: Entry changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandingEntryResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '404':
+          $ref: '#/components/responses/StandingEntryNotFound'
+        '409':
+          $ref: '#/components/responses/StandingContextFull'
+        '422':
+          $ref: '#/components/responses/StandingEntryInvalid'
+        default:
+          $ref: '#/components/responses/ApiError'
+    delete:
+      operationId: deleteUserStandingEntry
+      summary: Delete a standing entry for good.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Entry deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandingEntryDeletedResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '404':
+          $ref: '#/components/responses/StandingEntryNotFound'
+        default:
+          $ref: '#/components/responses/ApiError'
   /v1/partner/plans/tenant:
     get:
       operationId: listTenantPlans
@@ -691,6 +953,23 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    EntryUuid:
+      name: entry_uuid
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IncludeRetired:
+      name: include_retired
+      in: query
+      schema: { type: boolean, default: false }
+    StandingEntriesLimit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+    StandingEntriesOffset:
+      name: offset
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
   responses:
     AuthenticationError:
       description: Authentication failed.
@@ -700,6 +979,49 @@ components:
             $ref: '#/components/schemas/Error'
     ApiError:
       description: API request failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    StandingTenantNotFound:
+      description: >-
+        Not one of this partner's tenants (TENANT_NOT_FOUND).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    StandingUserNotFound:
+      description: >-
+        Not one of this partner's tenants (TENANT_NOT_FOUND), or not a user
+        of that tenant (USER_NOT_FOUND).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    StandingEntryNotFound:
+      description: >-
+        No such entry of this owner (STANDING_ENTRY_NOT_FOUND), or the
+        tenant or user is not found as on the collection.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    StandingContextFull:
+      description: >-
+        The owner's scope has no room for it (STANDING_CONTEXT_FULL, with
+        error.reason the same): its active, unexpired instructions together
+        exceed 4000 characters, or it would hold more than 50 active,
+        unexpired memories.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    StandingEntryInvalid:
+      description: >-
+        STANDING_ENTRY_INVALID, error.reason one of STANDING_ENTRY_EMPTY,
+        STANDING_ENTRY_TOO_LONG (a memory over 300 characters),
+        STANDING_ENTRY_INVALID_EXPIRY or STANDING_ENTRY_NO_CHANGES; or
+        VALIDATION_ERROR, with error.fields.
       content:
         application/json:
           schema:
@@ -1452,9 +1774,134 @@ components:
         keys:
           type: array
           items: { $ref: '#/components/schemas/JsonWebKey' }
+    StandingEntry:
+      type: object
+      required:
+        - uuid
+        - scope
+        - kind
+        - body
+        - status
+        - expires_on
+        - expired
+        - source
+        - source_job_uuid
+        - created_at
+        - updated_at
+      properties:
+        uuid: { type: string, format: uuid }
+        scope:
+          type: string
+          enum: [tenant, user]
+          description: A workspace entry, or one user's personal entry.
+        kind: { type: string, enum: [instruction, memory] }
+        body: { type: string, description: One line of text. }
+        status:
+          type: string
+          enum: [active, retired]
+          description: A retired entry is kept but never told.
+        expires_on:
+          type: string
+          format: date
+          nullable: true
+          description: The last day it applies, inclusive, UTC; null never expires.
+        expired:
+          type: boolean
+          description: expires_on has passed, so the entry is listed but no longer told.
+        source:
+          type: string
+          enum: [api, agent]
+          description: agent when the assistant saved it.
+        source_job_uuid:
+          type: string
+          format: uuid
+          nullable: true
+          description: The conversation an agent-saved entry came from.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    StandingEntryPagination:
+      type: object
+      required: [total, page, per_page, pages]
+      properties:
+        total: { type: integer }
+        page: { type: integer }
+        per_page: { type: integer }
+        pages: { type: integer }
+    StandingEntryListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [entries]
+          properties:
+            entries:
+              type: object
+              required: [items, pagination]
+              properties:
+                items:
+                  type: array
+                  items: { $ref: '#/components/schemas/StandingEntry' }
+                pagination: { $ref: '#/components/schemas/StandingEntryPagination' }
+    StandingEntryResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [entry]
+          properties:
+            entry: { $ref: '#/components/schemas/StandingEntry' }
+    StandingEntryDeletedResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [entry_uuid]
+          properties:
+            entry_uuid: { type: string, format: uuid }
+    CreateStandingEntryRequest:
+      type: object
+      required: [kind, body]
+      properties:
+        kind: { type: string, enum: [instruction, memory] }
+        body: { type: string }
+        expires_on:
+          type: string
+          format: date
+          nullable: true
+          description: Omit, or null, for an entry that never expires.
+    UpdateStandingEntryRequest:
+      type: object
+      description: >-
+        Any of the fields. "expires_on": null clears the expiry; omitting the
+        key keeps it.
+      properties:
+        body: { type: string }
+        expires_on: { type: string, format: date, nullable: true }
+        status: { type: string, enum: [active, retired] }
+    ErrorDetail:
+      type: object
+      properties:
+        reason:
+          type: string
+          description: >-
+            The finer cause of a refusal, such as STANDING_ENTRY_TOO_LONG under
+            STANDING_ENTRY_INVALID.
+        fields:
+          type: object
+          description: A 422 VALIDATION_ERROR's field paths, each with its messages.
+          additionalProperties:
+            type: array
+            items: { type: string }
     Error:
       type: object
       required: [code, message]
       properties:
         code: { type: string }
         message: { type: string }
+        error:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/ErrorDetail'

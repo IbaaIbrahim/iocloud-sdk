@@ -3,12 +3,14 @@
 namespace IOCloud\Laravel;
 
 use DateTimeImmutable;
+use DateTimeInterface;
 use DateTimeZone;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use IOCloud\Laravel\Data\FederatedSession;
 use IOCloud\Laravel\Data\IdentityProvider;
 use IOCloud\Laravel\Data\PartnerToken;
 use IOCloud\Laravel\Data\PlanSubscription;
+use IOCloud\Laravel\Data\StandingEntry;
 use IOCloud\Laravel\Data\SubjectTokenClaimNames;
 use IOCloud\Laravel\Data\Tenant;
 use IOCloud\Laravel\Data\TenantCredential;
@@ -39,6 +41,13 @@ final class IOCloudClient
     private const DEFAULT_ALLOWED_ALGORITHMS = ['RS256'];
 
     private const DEFAULT_TOKEN_MAX_AGE_SECONDS = 900;
+
+    // listStandingEntries() reads the platform's largest page until the listing
+    // ends. The cap only stops a runaway loop: one owner has at most ~50 active
+    // memories, so 50 pages of 100 leaves room for years of retired entries.
+    private const STANDING_ENTRIES_PAGE_SIZE = 100;
+
+    private const STANDING_ENTRIES_MAX_PAGES = 50;
 
     private ?PartnerToken $partnerToken = null;
 
@@ -422,6 +431,172 @@ final class IOCloudClient
         }
 
         return $purchases;
+    }
+
+    /**
+     * List a workspace's standing entries, or one user's.
+     *
+     * Without `$userUuid` these are the tenant's own entries, told to every one
+     * of its users; with it, that user's personal entries. Oldest first.
+     * Expired entries are included, flagged `expired`; retired ones only with
+     * `$includeRetired = true`.
+     *
+     * Reads every page, 100 entries at a time, and stops after 50 pages (5,000
+     * entries) whatever the platform reports beyond them.
+     *
+     * @return list<StandingEntry>
+     */
+    public function listStandingEntries(
+        string $tenantUuid,
+        ?string $userUuid = null,
+        bool $includeRetired = false,
+    ): array {
+        $path = $this->standingContextPath($tenantUuid, $userUuid);
+        $retired = $includeRetired ? 'true' : 'false';
+        $pageSize = self::STANDING_ENTRIES_PAGE_SIZE;
+
+        $entries = [];
+        for ($page = 0; $page < self::STANDING_ENTRIES_MAX_PAGES; $page++) {
+            $offset = $page * $pageSize;
+            $data = $this->partnerRequest(
+                'GET',
+                "{$path}?include_retired={$retired}&limit={$pageSize}&offset={$offset}",
+                null,
+            );
+
+            $listing = (array) ($data['entries'] ?? []);
+            $items = (array) ($listing['items'] ?? []);
+            foreach ($items as $item) {
+                $entries[] = StandingEntry::fromPayload((array) $item);
+            }
+
+            $total = (int) (((array) ($listing['pagination'] ?? []))['total'] ?? 0);
+            if (count($items) < $pageSize || count($entries) >= $total) {
+                break;
+            }
+        }
+
+        return $entries;
+    }
+
+    /**
+     * Read one standing entry of a workspace, or of one of its users. An entry
+     * of another owner is `404 STANDING_ENTRY_NOT_FOUND`, exactly like one that
+     * does not exist.
+     */
+    public function getStandingEntry(
+        string $tenantUuid,
+        string $entryUuid,
+        ?string $userUuid = null,
+    ): StandingEntry {
+        $data = $this->partnerRequest(
+            'GET',
+            $this->standingContextPath($tenantUuid, $userUuid)."/{$entryUuid}",
+            null,
+        );
+
+        return StandingEntry::fromPayload($this->array($data['entry']));
+    }
+
+    /**
+     * Save an instruction or memory the assistant is told in every conversation.
+     *
+     * `$kind` is `'instruction'` (a directive: "answer in formal German") or
+     * `'memory'` (a fact: "manages the Hamburg site"). Without `$userUuid` it is
+     * a workspace entry, told to every user of the tenant; with it, that user's
+     * own.
+     *
+     * `$expiresOn` is the last day it applies, inclusive, in UTC: a date
+     * (formatted `Y-m-d` as it stands) or a `'Y-m-d'` string. Null means the
+     * entry never expires.
+     *
+     * The platform refuses an entry that does not fit with
+     * `409 STANDING_CONTEXT_FULL` and a malformed one with
+     * `422 STANDING_ENTRY_INVALID`; the exception's `$reason` says which limit.
+     */
+    public function createStandingEntry(
+        string $tenantUuid,
+        string $kind,
+        string $body,
+        DateTimeInterface|string|null $expiresOn = null,
+        ?string $userUuid = null,
+    ): StandingEntry {
+        $payload = ['kind' => $kind, 'body' => $body];
+        if ($expiresOn !== null) {
+            $payload['expires_on'] = $this->isoDate($expiresOn);
+        }
+
+        $data = $this->partnerRequest(
+            'POST',
+            $this->standingContextPath($tenantUuid, $userUuid),
+            $payload,
+        );
+
+        return StandingEntry::fromPayload($this->array($data['entry']));
+    }
+
+    /**
+     * Change an entry's text or expiry, or retire it. Null fields are left
+     * unchanged.
+     *
+     * Since a null `$expiresOn` keeps the expiry, clearing it — so the entry
+     * never expires — takes `$clearExpiresOn = true`; passing a date as well
+     * throws {@see InvalidArgumentException} before any request.
+     * `$status = 'retired'` stops the entry being told without deleting it, and
+     * `'active'` brings it back. A change that changes nothing is
+     * `422 STANDING_ENTRY_INVALID` with `$reason` `STANDING_ENTRY_NO_CHANGES`.
+     */
+    public function updateStandingEntry(
+        string $tenantUuid,
+        string $entryUuid,
+        ?string $userUuid = null,
+        ?string $body = null,
+        DateTimeInterface|string|null $expiresOn = null,
+        bool $clearExpiresOn = false,
+        ?string $status = null,
+    ): StandingEntry {
+        if ($clearExpiresOn && $expiresOn !== null) {
+            throw new InvalidArgumentException(
+                'updateStandingEntry() takes $expiresOn or $clearExpiresOn, not both.'
+            );
+        }
+
+        $payload = [];
+        if ($body !== null) {
+            $payload['body'] = $body;
+        }
+        if ($clearExpiresOn) {
+            $payload['expires_on'] = null;
+        } elseif ($expiresOn !== null) {
+            $payload['expires_on'] = $this->isoDate($expiresOn);
+        }
+        if ($status !== null) {
+            $payload['status'] = $status;
+        }
+
+        $data = $this->partnerRequest(
+            'PATCH',
+            $this->standingContextPath($tenantUuid, $userUuid)."/{$entryUuid}",
+            $payload,
+        );
+
+        return StandingEntry::fromPayload($this->array($data['entry']));
+    }
+
+    /**
+     * Delete a standing entry for good. To stop an entry being told but keep
+     * it, retire it with {@see updateStandingEntry()} instead.
+     */
+    public function deleteStandingEntry(
+        string $tenantUuid,
+        string $entryUuid,
+        ?string $userUuid = null,
+    ): void {
+        $this->partnerRequest(
+            'DELETE',
+            $this->standingContextPath($tenantUuid, $userUuid)."/{$entryUuid}",
+            null,
+        );
     }
 
     /**
@@ -836,11 +1011,51 @@ final class IOCloudClient
         $type = $response->status() === 401
             ? IOCloudAuthenticationException::class
             : IOCloudAPIException::class;
+        $detail = is_array($body['error'] ?? null) ? $body['error'] : [];
+        $reason = $detail['reason'] ?? null;
         throw new $type(
             statusCode: $response->status(),
             errorCode: (string) ($body['code'] ?? 'IOCLOUD_API_ERROR'),
             message: (string) ($body['message'] ?? $response->body() ?: 'IOCloud API request failed.'),
+            reason: is_string($reason) ? $reason : null,
+            fields: $this->errorFields($detail['fields'] ?? null),
         );
+    }
+
+    /**
+     * A validation error's `error.fields`: each field path and its messages.
+     *
+     * @return array<string, list<string>>
+     */
+    private function errorFields(mixed $fields): array
+    {
+        if (! is_array($fields)) {
+            return [];
+        }
+
+        $parsed = [];
+        foreach ($fields as $field => $messages) {
+            $parsed[(string) $field] = array_values(array_map(
+                static fn (mixed $message): string => (string) $message,
+                is_array($messages) ? $messages : [$messages],
+            ));
+        }
+
+        return $parsed;
+    }
+
+    /** The workspace family, or the personal one when a user is named. */
+    private function standingContextPath(string $tenantUuid, ?string $userUuid): string
+    {
+        return $userUuid === null
+            ? "/v1/partner/tenants/{$tenantUuid}/standing-context"
+            : "/v1/partner/tenants/{$tenantUuid}/users/{$userUuid}/standing-context";
+    }
+
+    /** A calendar day as the platform takes it, `Y-m-d`. */
+    private function isoDate(DateTimeInterface|string $value): string
+    {
+        return $value instanceof DateTimeInterface ? $value->format('Y-m-d') : $value;
     }
 
     private function tokenIsFresh(PartnerToken|TenantToken|null $token): bool

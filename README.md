@@ -35,10 +35,14 @@ All clients implement:
   one, and activate it (see below);
 - top-up packages: author the credit bundles you sell your tenants, scope them
   to particular tenant plans, and grant them (see below);
+- standing context: the instructions and memories the assistant is told in
+  every conversation, for a whole workspace or one of its users (see below);
 - federation: RSA keypair generation, the JWKS document, subject-token signing,
   identity-provider registration, and the RFC 8693 token exchange, including
   tenants created at their first login (see below);
-- typed responses and consistent API/authentication exceptions.
+- typed responses and consistent API/authentication exceptions, carrying the
+  response's `code` and, when it has one, its `error.reason` and
+  `error.fields`.
 
 ## Putting a tenant on a plan
 
@@ -163,6 +167,117 @@ from the catalogue without touching what it already sold.
 The Node and Laravel packages expose the same six calls
 (`listTopupPackages`, `createTopupPackage`, `updateTopupPackage`,
 `grantTenantTopup`, `activateTenantTopup`, `listTenantTopups`).
+
+## Standing context
+
+Standing context is the short instructions and memories the platform tells the
+assistant in every conversation of a tenant's users (ADR-021 in the
+AI-EcoSystem repository). An *instruction* is a directive ("answer in formal
+German"), a *memory* a fact ("our audits follow ISO 9001"). Each entry belongs
+to one of two owners:
+
+- the **workspace**, which is the tenant: every user of the tenant is told its
+  entries;
+- one **user** of that tenant: only that user is told their personal entries,
+  on top of the workspace's.
+
+Your backend manages both with the partner token, from your own application's
+organisation-settings page for instance. Two route families with the same
+five endpoints serve them, and one set of calls covers both: leave the user
+out for the workspace's entries
+(`/v1/partner/tenants/{tenant_uuid}/standing-context`), or name one for that
+user's (`/v1/partner/tenants/{tenant_uuid}/users/{user_uuid}/standing-context`).
+
+```python
+from datetime import date
+
+rule = client.create_standing_entry(
+    tenant.uuid, kind="instruction", body="Answer in formal German."
+)
+memory = client.create_standing_entry(
+    tenant.uuid,
+    user_uuid=user.uuid,               # that user's own entry
+    kind="memory",
+    body="Manages the Hamburg site.",
+    expires_on=date(2026, 12, 31),     # the last day it applies, inclusive, UTC
+)
+
+client.list_standing_entries(tenant.uuid)              # the workspace's
+client.list_standing_entries(
+    tenant.uuid, user_uuid=user.uuid, include_retired=True
+)                                                      # one user's, retired too
+client.get_standing_entry(tenant.uuid, rule.uuid)
+
+client.update_standing_entry(tenant.uuid, rule.uuid, body="Answer in formal English.")
+client.update_standing_entry(tenant.uuid, memory.uuid, user_uuid=user.uuid, expires_on=None)
+client.update_standing_entry(tenant.uuid, rule.uuid, status="retired")  # kept, never told
+client.delete_standing_entry(tenant.uuid, rule.uuid)
+```
+
+A listing is oldest first, and the SDK reads every page of it, 100 entries a
+request, up to 50 pages. Expired entries are listed with `expired` set but are
+no longer told; retired ones are listed only with `include_retired`. An
+entry's `source` is `agent` when the assistant saved it itself — in the
+conversation `source_job_uuid` names — and `api` when someone wrote it through
+the API.
+
+An update changes only what it names. For the expiry the platform tells
+*clear* from *keep* by the key: `"expires_on": null` clears it, so the entry
+never expires, and a request without the key keeps it. Each package can say
+both:
+
+| Package | Keep the expiry | Clear it | Set it |
+| --- | --- | --- | --- |
+| Python | leave `expires_on` out | `expires_on=None` | `expires_on=date(…)` or `"YYYY-MM-DD"` |
+| Node | leave `expiresOn` out, or `undefined` | `expiresOn: null` | `expiresOn: "YYYY-MM-DD"` |
+| Laravel | leave `expiresOn` out, or `null` | `clearExpiresOn: true` | `expiresOn: '2026-12-31'` or a `DateTimeInterface` |
+
+Laravel needs the flag because a null `$expiresOn` already means "unchanged",
+as every null does in its update calls; passing both throws
+`InvalidArgumentException` before any request.
+
+The platform enforces its limits for each owner:
+
+- all of the owner's active, unexpired instructions together: at most 4,000
+  characters;
+- one memory: at most 300 characters;
+- at most 50 active, unexpired memories.
+
+Each entry is stored as one line. The SDK checks none of this, nor `kind` and
+`status` (`instruction` / `memory`, `active` / `retired`); the platform
+answers:
+
+| Status | `code` | `reason` and meaning |
+| --- | --- | --- |
+| `422` | `STANDING_ENTRY_INVALID` | `STANDING_ENTRY_EMPTY`, `STANDING_ENTRY_TOO_LONG`, `STANDING_ENTRY_INVALID_EXPIRY` or `STANDING_ENTRY_NO_CHANGES` |
+| `409` | `STANDING_CONTEXT_FULL` | `STANDING_CONTEXT_FULL`: the owner has no room for it — retire or delete an entry first |
+| `404` | `STANDING_ENTRY_NOT_FOUND` | no such entry of this owner |
+| `404` | `TENANT_NOT_FOUND` | not one of your tenants |
+| `404` | `USER_NOT_FOUND` | not a user of that tenant |
+| `422` | `VALIDATION_ERROR` | a malformed request; `fields` names each invalid field |
+
+Every package's API error now carries the response's `error` detail beside its
+`code`: `reason` (`None` / `null` when there is none) and `fields` (empty when
+there are none). That is `IOCloudAPIError.reason` and `.fields` in Python and
+Node, and `IOCloudAPIException::$reason` and `$fields` in Laravel, whose code
+is `$errorCode`:
+
+```python
+from iocloud_sdk import IOCloudAPIError
+
+try:
+    client.create_standing_entry(tenant.uuid, kind="memory", body=text)
+except IOCloudAPIError as error:
+    if error.code == "STANDING_CONTEXT_FULL":
+        ...  # ask for an entry to retire first
+    elif error.reason == "STANDING_ENTRY_TOO_LONG":
+        ...  # ask for a shorter one
+```
+
+The Node and Laravel packages expose the same five calls
+(`listStandingEntries`, `getStandingEntry`, `createStandingEntry`,
+`updateStandingEntry`, `deleteStandingEntry`) with an optional `userUuid`, and
+the same `StandingEntry`.
 
 ## Federation in one page
 

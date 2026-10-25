@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -620,4 +620,59 @@ class TenantTopup:
                 if isinstance(provisioning, dict)
                 else None
             ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class StandingEntry:
+    """One instruction or memory the assistant is told in every conversation.
+
+    ``scope`` is ``"tenant"`` for a workspace entry, which every user of the
+    tenant gets, and ``"user"`` for one user's personal entry. ``kind`` is
+    ``"instruction"`` (a directive) or ``"memory"`` (a fact).
+
+    ``expires_on`` is the last day the entry applies, inclusive, in UTC, and
+    ``None`` for one that never expires. ``expired`` says that day has passed:
+    an expired entry is still listed, but no longer told. ``status`` is
+    ``"active"`` or ``"retired"``; a retired entry is kept but never told, and
+    listed only on request. So an entry applies when :attr:`is_active` and not
+    ``expired``.
+
+    ``source`` is ``"api"`` for an entry someone wrote through the API and
+    ``"agent"`` for one the assistant saved itself, in the conversation
+    ``source_job_uuid`` names.
+    """
+
+    uuid: UUID
+    scope: str
+    kind: str
+    body: str
+    status: str
+    expires_on: date | None
+    expired: bool
+    source: str
+    source_job_uuid: UUID | None
+    created_at: datetime
+    updated_at: datetime
+
+    @property
+    def is_active(self) -> bool:
+        return self.status == "active"
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "StandingEntry":
+        expires_on = payload.get("expires_on")
+        source_job_uuid = payload.get("source_job_uuid")
+        return cls(
+            uuid=UUID(str(payload["uuid"])),
+            scope=str(payload["scope"]),
+            kind=str(payload["kind"]),
+            body=str(payload["body"]),
+            status=str(payload["status"]),
+            expires_on=date.fromisoformat(str(expires_on)) if expires_on else None,
+            expired=bool(payload.get("expired", False)),
+            source=str(payload["source"]),
+            source_job_uuid=UUID(str(source_job_uuid)) if source_job_uuid else None,
+            created_at=_datetime(payload["created_at"]),
+            updated_at=_datetime(payload["updated_at"]),
         )

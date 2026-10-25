@@ -91,6 +91,72 @@ client.set_user_persona(
 later persona updates. `set_user_persona` refreshes the tenant token once and
 retries on a `401`.
 
+## Standing context
+
+Standing context is the short instructions and memories the assistant is told
+in every conversation: a workspace's, which every user of the tenant gets, and
+one user's personal entries, on top of them. Leave `user_uuid` out to manage
+the workspace's; pass it to manage that user's. All five calls use the partner
+token:
+
+```python
+from datetime import date
+
+from iocloud_sdk import IOCloudAPIError
+
+entry = client.create_standing_entry(
+    tenant.uuid,
+    kind="instruction",                 # or "memory"
+    body="Answer in formal German.",
+    expires_on=date(2026, 12, 31),      # optional: the last day it applies, UTC
+)
+note = client.create_standing_entry(
+    tenant.uuid, user_uuid=user.uuid, kind="memory", body="Manages the Hamburg site."
+)
+
+entries = client.list_standing_entries(tenant.uuid)   # every page, oldest first
+mine = client.list_standing_entries(tenant.uuid, user_uuid=user.uuid, include_retired=True)
+entry = client.get_standing_entry(tenant.uuid, entry.uuid)
+
+client.update_standing_entry(tenant.uuid, entry.uuid, body="Answer in formal English.")
+client.update_standing_entry(tenant.uuid, entry.uuid, expires_on=None)    # never expires
+client.update_standing_entry(tenant.uuid, entry.uuid, status="retired")   # kept, not told
+client.delete_standing_entry(tenant.uuid, note.uuid, user_uuid=user.uuid)
+```
+
+`update_standing_entry` changes only what you pass: leave `expires_on` out to
+keep the expiry, pass `expires_on=None` to clear it, or a `date` (or
+`"YYYY-MM-DD"`) to set it; a `datetime` raises `TypeError`. `body=None` and
+`status=None` leave those unchanged too.
+
+Each result is a `StandingEntry`: `uuid`, `scope` (`"tenant"` or `"user"`),
+`kind`, `body`, `status` (`"active"` or `"retired"`, with `is_active`),
+`expires_on` (a `date`, or `None`), `expired`, `source` (`"agent"` when the
+assistant saved it, `"api"` otherwise), `source_job_uuid`, `created_at` and
+`updated_at`. A listing includes expired entries, flagged `expired`, and
+retired ones only with `include_retired=True`; it reads 100 entries a request
+and stops after 50 pages.
+
+The platform enforces its limits for each owner — its active, unexpired
+instructions together at most 4,000 characters, one memory at most 300, at most
+50 active, unexpired memories — and refuses with an `IOCloudAPIError` whose
+`reason` says why:
+
+```python
+try:
+    client.create_standing_entry(tenant.uuid, kind="memory", body=text)
+except IOCloudAPIError as error:
+    error.code     # "STANDING_CONTEXT_FULL" (409) or "STANDING_ENTRY_INVALID" (422), …
+    error.reason   # e.g. "STANDING_ENTRY_TOO_LONG"; None when the response has none
+    error.fields   # a VALIDATION_ERROR's invalid fields; empty otherwise
+```
+
+`STANDING_ENTRY_INVALID`'s reason is one of `STANDING_ENTRY_EMPTY`,
+`STANDING_ENTRY_TOO_LONG`, `STANDING_ENTRY_INVALID_EXPIRY` and
+`STANDING_ENTRY_NO_CHANGES`. A `404` is `STANDING_ENTRY_NOT_FOUND`,
+`TENANT_NOT_FOUND` (not one of your tenants) or `USER_NOT_FOUND` (not a user of
+that tenant). See [Standing context](../../README.md#standing-context).
+
 ## Federation: signing your users into IOCloud
 
 Federating means your application acts as a small OIDC issuer — it signs a

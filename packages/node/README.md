@@ -35,6 +35,94 @@ authenticated request that returns `401` is retried once with a refreshed
 token. API failures throw `IOCloudAPIError`; authentication failures throw
 `IOCloudAuthenticationError`.
 
+## Standing context
+
+Standing context is the short instructions and memories the assistant is told
+in every conversation: a workspace's, which every user of the tenant gets, and
+one user's personal entries, on top of them. Leave `userUuid` out to manage the
+workspace's; pass it to manage that user's. All five calls use the partner
+token:
+
+```ts
+import { IOCloudAPIError } from "@iocloud/sdk";
+
+const entry = await client.createStandingEntry({
+  tenantUuid: tenant.uuid,
+  kind: "instruction",               // or "memory"
+  body: "Answer in formal German.",
+  expiresOn: "2026-12-31",           // optional: the last day it applies, UTC
+});
+const note = await client.createStandingEntry({
+  tenantUuid: tenant.uuid,
+  userUuid: user.uuid,
+  kind: "memory",
+  body: "Manages the Hamburg site.",
+});
+
+const entries = await client.listStandingEntries({ tenantUuid: tenant.uuid });
+const mine = await client.listStandingEntries({
+  tenantUuid: tenant.uuid,
+  userUuid: user.uuid,
+  includeRetired: true,
+});
+await client.getStandingEntry({ tenantUuid: tenant.uuid, entryUuid: entry.uuid });
+
+await client.updateStandingEntry({
+  tenantUuid: tenant.uuid,
+  entryUuid: entry.uuid,
+  body: "Answer in formal English.",
+});
+await client.updateStandingEntry({
+  tenantUuid: tenant.uuid,
+  entryUuid: entry.uuid,
+  expiresOn: null,                   // clears it: never expires
+});
+await client.updateStandingEntry({
+  tenantUuid: tenant.uuid,
+  entryUuid: entry.uuid,
+  status: "retired",                 // kept, no longer told
+});
+await client.deleteStandingEntry({
+  tenantUuid: tenant.uuid,
+  userUuid: user.uuid,
+  entryUuid: note.uuid,
+});
+```
+
+`updateStandingEntry` changes only what you pass: leave `expiresOn` out (or
+`undefined`) to keep the expiry, pass `null` to clear it, or `"YYYY-MM-DD"` to
+set it. `body` and `status` work the same way, without the `null`.
+
+Each result is a `StandingEntry`: `uuid`, `scope` (`"tenant"` or `"user"`),
+`kind`, `body`, `status` (`"active"` or `"retired"`), `expiresOn`
+(`"YYYY-MM-DD"` — a calendar day, so a string — or `null`), `expired`, `source`
+(`"agent"` when the assistant saved it, `"api"` otherwise), `sourceJobUuid`,
+`createdAt` and `updatedAt`. A listing includes expired entries, flagged
+`expired`, and retired ones only with `includeRetired: true`; it reads 100
+entries a request and stops after 50 pages.
+
+The platform enforces its limits for each owner — its active, unexpired
+instructions together at most 4,000 characters, one memory at most 300, at most
+50 active, unexpired memories — and refuses with an `IOCloudAPIError` whose
+`reason` says why:
+
+```ts
+try {
+  await client.createStandingEntry({ tenantUuid, kind: "memory", body: text });
+} catch (error) {
+  if (!(error instanceof IOCloudAPIError)) throw error;
+  error.code;    // "STANDING_CONTEXT_FULL" (409) or "STANDING_ENTRY_INVALID" (422), …
+  error.reason;  // e.g. "STANDING_ENTRY_TOO_LONG"; null when the response has none
+  error.fields;  // a VALIDATION_ERROR's invalid fields; {} otherwise
+}
+```
+
+`STANDING_ENTRY_INVALID`'s reason is one of `STANDING_ENTRY_EMPTY`,
+`STANDING_ENTRY_TOO_LONG`, `STANDING_ENTRY_INVALID_EXPIRY` and
+`STANDING_ENTRY_NO_CHANGES`. A `404` is `STANDING_ENTRY_NOT_FOUND`,
+`TENANT_NOT_FOUND` (not one of your tenants) or `USER_NOT_FOUND` (not a user of
+that tenant). See [Standing context](../../README.md#standing-context).
+
 ## Federation: signing your users into IOCloud
 
 Federating means your application acts as a small OIDC issuer — it signs a
