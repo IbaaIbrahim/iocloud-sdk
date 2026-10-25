@@ -1,6 +1,7 @@
 import warnings
-from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Optional, Sequence
+from datetime import date, datetime, timedelta, timezone
+from enum import Enum
+from typing import TYPE_CHECKING, Any, Final, Optional, Sequence
 from uuid import UUID
 
 import httpx
@@ -17,6 +18,7 @@ from .models import (
     IdentityProvider,
     PartnerToken,
     PlanSubscription,
+    StandingEntry,
     SubjectTokenClaimNames,
     Tenant,
     TenantCredential,
@@ -39,6 +41,26 @@ JWT_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:jwt"
 
 _DEFAULT_ALLOWED_ALGORITHMS = ("RS256",)
 _DEFAULT_TOKEN_MAX_AGE_SECONDS = 900
+
+# list_standing_entries reads the platform's largest page until the listing
+# ends. The cap only stops a runaway loop: one owner has at most ~50 active
+# memories, so 50 pages of 100 leaves room for years of retired entries.
+_STANDING_ENTRIES_PAGE_SIZE = 100
+_STANDING_ENTRIES_MAX_PAGES = 50
+
+
+class _Unset(Enum):
+    """The type of :data:`_UNSET`, an argument the caller left out."""
+
+    UNSET = "UNSET"
+
+    def __repr__(self) -> str:
+        return "<unchanged>"
+
+
+# update_standing_entry's expires_on default: None there means "clear it", so
+# "leave it as it is" needs a value of its own.
+_UNSET: Final = _Unset.UNSET
 
 
 class IOCloudClient:
@@ -396,6 +418,146 @@ class IOCloudClient:
         return [
             TopupPurchase.from_payload(item) for item in data.get("purchases", [])
         ]
+
+    # ------------------------------------------------------------------
+    # Standing context: the instructions and memories every run is told
+    # ------------------------------------------------------------------
+
+    def list_standing_entries(
+        self,
+        tenant_uuid: UUID | str,
+        *,
+        user_uuid: UUID | str | None = None,
+        include_retired: bool = False,
+    ) -> list[StandingEntry]:
+        """List a workspace's standing entries, or one user's.
+
+        Without ``user_uuid`` these are the tenant's own entries, told to every
+        one of its users; with it, that user's personal entries. Oldest first.
+        Expired entries are included, flagged ``expired``; retired ones only
+        with ``include_retired=True``.
+
+        Reads every page, 100 entries at a time, and stops after 50 pages
+        (5,000 entries) whatever the platform reports beyond them.
+        """
+        path = _standing_context_path(tenant_uuid, user_uuid)
+        entries: list[StandingEntry] = []
+        for page in range(_STANDING_ENTRIES_MAX_PAGES):
+            data = self._partner_request(
+                "GET",
+                path,
+                params={
+                    "include_retired": "true" if include_retired else "false",
+                    "limit": _STANDING_ENTRIES_PAGE_SIZE,
+                    "offset": page * _STANDING_ENTRIES_PAGE_SIZE,
+                },
+            )
+            listing = data.get("entries") or {}
+            items = listing.get("items") or []
+            entries.extend(StandingEntry.from_payload(item) for item in items)
+            total = int((listing.get("pagination") or {}).get("total", 0))
+            if len(items) < _STANDING_ENTRIES_PAGE_SIZE or len(entries) >= total:
+                break
+        return entries
+
+    def get_standing_entry(
+        self,
+        tenant_uuid: UUID | str,
+        entry_uuid: UUID | str,
+        *,
+        user_uuid: UUID | str | None = None,
+    ) -> StandingEntry:
+        """Read one standing entry of a workspace, or of one of its users.
+
+        An entry of another owner is ``404 STANDING_ENTRY_NOT_FOUND``, exactly
+        like one that does not exist.
+        """
+        data = self._partner_request(
+            "GET", f"{_standing_context_path(tenant_uuid, user_uuid)}/{entry_uuid}"
+        )
+        return StandingEntry.from_payload(data["entry"])
+
+    def create_standing_entry(
+        self,
+        tenant_uuid: UUID | str,
+        *,
+        kind: str,
+        body: str,
+        expires_on: date | str | None = None,
+        user_uuid: UUID | str | None = None,
+    ) -> StandingEntry:
+        """Save an instruction or memory the assistant is told in every conversation.
+
+        ``kind`` is ``"instruction"`` (a directive: "answer in formal German")
+        or ``"memory"`` (a fact: "manages the Hamburg site"). Without
+        ``user_uuid`` it is a workspace entry, told to every user of the
+        tenant; with it, that user's own.
+
+        ``expires_on`` is the last day it applies, inclusive, in UTC — a
+        :class:`~datetime.date` or ``"YYYY-MM-DD"``; omit it for an entry that
+        never expires. Each entry is stored as one line.
+
+        The platform refuses an entry that does not fit with ``409
+        STANDING_CONTEXT_FULL`` and a malformed one with ``422
+        STANDING_ENTRY_INVALID``; the error's ``reason`` says which limit.
+        """
+        payload: dict[str, Any] = {"kind": kind, "body": body}
+        if expires_on is not None:
+            payload["expires_on"] = _iso_date(expires_on)
+        data = self._partner_request(
+            "POST", _standing_context_path(tenant_uuid, user_uuid), json=payload
+        )
+        return StandingEntry.from_payload(data["entry"])
+
+    def update_standing_entry(
+        self,
+        tenant_uuid: UUID | str,
+        entry_uuid: UUID | str,
+        *,
+        user_uuid: UUID | str | None = None,
+        body: str | None = None,
+        expires_on: date | str | None | _Unset = _UNSET,
+        status: str | None = None,
+    ) -> StandingEntry:
+        """Change an entry's text or expiry, or retire it. Omitted fields are left unchanged.
+
+        ``expires_on=None`` clears the expiry, so the entry never expires;
+        leaving ``expires_on`` out keeps it. ``status="retired"`` stops the
+        entry being told without deleting it, and ``status="active"`` brings
+        it back. A change that changes nothing is ``422 STANDING_ENTRY_INVALID``
+        with ``reason`` ``STANDING_ENTRY_NO_CHANGES``.
+        """
+        payload: dict[str, Any] = {}
+        if body is not None:
+            payload["body"] = body
+        if expires_on is not _UNSET:
+            payload["expires_on"] = (
+                None if expires_on is None else _iso_date(expires_on)
+            )
+        if status is not None:
+            payload["status"] = status
+        data = self._partner_request(
+            "PATCH",
+            f"{_standing_context_path(tenant_uuid, user_uuid)}/{entry_uuid}",
+            json=payload,
+        )
+        return StandingEntry.from_payload(data["entry"])
+
+    def delete_standing_entry(
+        self,
+        tenant_uuid: UUID | str,
+        entry_uuid: UUID | str,
+        *,
+        user_uuid: UUID | str | None = None,
+    ) -> None:
+        """Delete a standing entry for good.
+
+        To stop an entry being told but keep it, retire it with
+        :meth:`update_standing_entry` instead.
+        """
+        self._partner_request(
+            "DELETE", f"{_standing_context_path(tenant_uuid, user_uuid)}/{entry_uuid}"
+        )
 
     def create_identity_provider(
         self,
@@ -811,10 +973,15 @@ class IOCloudClient:
             if response.status_code == 401
             else IOCloudAPIError
         )
+        detail = body.get("error")
+        detail = detail if isinstance(detail, dict) else {}
+        reason = detail.get("reason")
         raise error_type(
             status_code=response.status_code,
             code=str(body.get("code", "IOCLOUD_API_ERROR")),
             message=str(body.get("message", response.text or "IOCloud API request failed.")),
+            reason=reason if isinstance(reason, str) else None,
+            fields=_error_fields(detail.get("fields")),
         )
 
     @staticmethod
@@ -825,6 +992,37 @@ class IOCloudClient:
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
         return expires_at > datetime.now(timezone.utc) + timedelta(seconds=30)
+
+
+def _standing_context_path(
+    tenant_uuid: UUID | str, user_uuid: UUID | str | None
+) -> str:
+    """The workspace family, or the personal one when a user is named."""
+    if user_uuid is None:
+        return f"/v1/partner/tenants/{tenant_uuid}/standing-context"
+    return f"/v1/partner/tenants/{tenant_uuid}/users/{user_uuid}/standing-context"
+
+
+def _iso_date(value: date | str) -> str:
+    """A calendar day as the platform takes it, ``YYYY-MM-DD``."""
+    if isinstance(value, datetime):
+        # A datetime is a date too, but its isoformat() carries the time.
+        raise TypeError("expires_on is a calendar day: pass a date, not a datetime")
+    return value if isinstance(value, str) else value.isoformat()
+
+
+def _error_fields(value: Any) -> dict[str, list[str]]:
+    """A validation error's ``error.fields``: each field path and its messages."""
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(field): (
+            [str(message) for message in messages]
+            if isinstance(messages, list)
+            else [str(messages)]
+        )
+        for field, messages in value.items()
+    }
 
 
 def _json_object(response: httpx.Response) -> dict[str, Any]:

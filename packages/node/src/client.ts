@@ -10,6 +10,7 @@ import type {
   ActivateTenantSubscriptionInput,
   ActivateTenantTopupInput,
   CreateIdentityProviderInput,
+  CreateStandingEntryInput,
   CreateTenantInput,
   CreateTopupPackageInput,
   CreateUserInput,
@@ -19,12 +20,15 @@ import type {
   IdentityProvider,
   IssueTenantTokenInput,
   JsonWebKeySet,
+  ListStandingEntriesInput,
   PartnerToken,
   PlanSubscription,
   ProvisionedBalance,
   ProvisionedTopup,
   SetTenantExternalIdInput,
   SetUserPersonaInput,
+  StandingEntry,
+  StandingEntryInput,
   SubjectTokenClaimNames,
   SubscribeTenantInput,
   Tenant,
@@ -36,6 +40,7 @@ import type {
   TopupPackage,
   TopupPackagePlan,
   TopupPurchase,
+  UpdateStandingEntryInput,
   UpdateTopupPackageInput,
   UpdateUserStatusInput,
   User,
@@ -50,6 +55,11 @@ export const JWT_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:jwt";
 
 const DEFAULT_ALLOWED_ALGORITHMS = ["RS256"];
 const DEFAULT_TOKEN_MAX_AGE_SECONDS = 900;
+// listStandingEntries reads the platform's largest page until the listing
+// ends. The cap only stops a runaway loop: one owner has at most ~50 active
+// memories, so 50 pages of 100 leaves room for years of retired entries.
+const STANDING_ENTRIES_PAGE_SIZE = 100;
+const STANDING_ENTRIES_MAX_PAGES = 50;
 const DEFAULT_CLAIM_NAMES: SubjectTokenClaimNames = {
   user: "sub",
   tenant: "tenant_id",
@@ -344,6 +354,117 @@ export class IOCloudClient {
       "/v1/partner/topups/tenant/purchases",
     );
     return array(data.purchases).map((item) => parseTopupPurchase(record(item)));
+  }
+
+  /**
+   * List a workspace's standing entries, or one user's.
+   *
+   * Without `userUuid` these are the tenant's own entries, told to every one of
+   * its users; with it, that user's personal entries. Oldest first. Expired
+   * entries are included, flagged `expired`; retired ones only with
+   * `includeRetired: true`.
+   *
+   * Reads every page, 100 entries at a time, and stops after 50 pages (5,000
+   * entries) whatever the platform reports beyond them.
+   */
+  async listStandingEntries(
+    input: ListStandingEntriesInput,
+  ): Promise<StandingEntry[]> {
+    const path = standingContextPath(input);
+    const includeRetired = input.includeRetired ?? false;
+    const entries: StandingEntry[] = [];
+    for (let page = 0; page < STANDING_ENTRIES_MAX_PAGES; page += 1) {
+      const offset = page * STANDING_ENTRIES_PAGE_SIZE;
+      const data = await this.partnerRequest(
+        "GET",
+        `${path}?include_retired=${includeRetired}` +
+          `&limit=${STANDING_ENTRIES_PAGE_SIZE}&offset=${offset}`,
+      );
+      const listing = record(data.entries);
+      const items = array(listing.items);
+      entries.push(...items.map((item) => parseStandingEntry(record(item))));
+      const total = integer(record(listing.pagination).total);
+      if (items.length < STANDING_ENTRIES_PAGE_SIZE || entries.length >= total) {
+        break;
+      }
+    }
+    return entries;
+  }
+
+  /**
+   * Read one standing entry of a workspace, or of one of its users. An entry of
+   * another owner is `404 STANDING_ENTRY_NOT_FOUND`, exactly like one that does
+   * not exist.
+   */
+  async getStandingEntry(input: StandingEntryInput): Promise<StandingEntry> {
+    const data = await this.partnerRequest(
+      "GET",
+      `${standingContextPath(input)}/${input.entryUuid}`,
+    );
+    return parseStandingEntry(record(data.entry));
+  }
+
+  /**
+   * Save an instruction or memory the assistant is told in every conversation.
+   *
+   * `kind` is `"instruction"` (a directive: "answer in formal German") or
+   * `"memory"` (a fact: "manages the Hamburg site"). Without `userUuid` it is a
+   * workspace entry, told to every user of the tenant; with it, that user's
+   * own. `expiresOn` is the last day it applies, inclusive, in UTC, as
+   * `"YYYY-MM-DD"`; omit it for an entry that never expires.
+   *
+   * The platform refuses an entry that does not fit with
+   * `409 STANDING_CONTEXT_FULL` and a malformed one with
+   * `422 STANDING_ENTRY_INVALID`; the error's `reason` says which limit.
+   */
+  async createStandingEntry(
+    input: CreateStandingEntryInput,
+  ): Promise<StandingEntry> {
+    const payload: JsonObject = { kind: input.kind, body: input.body };
+    const expiresOn = input.expiresOn ?? null;
+    if (expiresOn !== null) payload.expires_on = expiresOn;
+    const data = await this.partnerRequest(
+      "POST",
+      standingContextPath(input),
+      payload,
+    );
+    return parseStandingEntry(record(data.entry));
+  }
+
+  /**
+   * Change an entry's text or expiry, or retire it. Omitted fields are left
+   * unchanged.
+   *
+   * `expiresOn: null` clears the expiry, so the entry never expires; leaving
+   * `expiresOn` out (or `undefined`) keeps it. `status: "retired"` stops the
+   * entry being told without deleting it, and `"active"` brings it back. A
+   * change that changes nothing is `422 STANDING_ENTRY_INVALID` with `reason`
+   * `STANDING_ENTRY_NO_CHANGES`.
+   */
+  async updateStandingEntry(
+    input: UpdateStandingEntryInput,
+  ): Promise<StandingEntry> {
+    const payload: JsonObject = {};
+    if (input.body !== undefined) payload.body = input.body;
+    if (input.expiresOn !== undefined) payload.expires_on = input.expiresOn;
+    if (input.status !== undefined) payload.status = input.status;
+    const data = await this.partnerRequest(
+      "PATCH",
+      `${standingContextPath(input)}/${input.entryUuid}`,
+      payload,
+    );
+    return parseStandingEntry(record(data.entry));
+  }
+
+  /**
+   * Delete a standing entry for good. To stop an entry being told but keep it,
+   * retire it with {@link updateStandingEntry} instead.
+   */
+  async deleteStandingEntry(input: StandingEntryInput): Promise<void> {
+    await this.partnerRequest(
+      "DELETE",
+      `${standingContextPath(input)}/${input.entryUuid}`,
+    );
   }
 
   /**
@@ -673,12 +794,17 @@ export class IOCloudClient {
     const ErrorType = response.status === 401
       ? IOCloudAuthenticationError
       : IOCloudAPIError;
+    const detail = isJsonObject(body.error) ? body.error : {};
     throw new ErrorType(
       response.status,
       typeof body.code === "string" ? body.code : "IOCLOUD_API_ERROR",
       typeof body.message === "string"
         ? body.message
         : text || "IOCloud API request failed.",
+      {
+        reason: typeof detail.reason === "string" ? detail.reason : null,
+        fields: errorFields(detail.fields),
+      },
     );
   }
 }
@@ -893,6 +1019,50 @@ function parseFederatedSession(payload: JsonObject): FederatedSession {
     tenantUuid: nullableString(payload.tenant_uuid),
     tenantCreated: Boolean(payload.tenant_created),
   };
+}
+
+function parseStandingEntry(payload: JsonObject): StandingEntry {
+  return {
+    uuid: string(payload.uuid),
+    scope: string(payload.scope) as StandingEntry["scope"],
+    kind: string(payload.kind) as StandingEntry["kind"],
+    body: string(payload.body),
+    status: string(payload.status) as StandingEntry["status"],
+    // "YYYY-MM-DD": a calendar day, not an instant, so it stays a string.
+    expiresOn: nullableString(payload.expires_on),
+    expired: Boolean(payload.expired),
+    source: string(payload.source) as StandingEntry["source"],
+    sourceJobUuid: nullableString(payload.source_job_uuid),
+    createdAt: new Date(string(payload.created_at)),
+    updatedAt: new Date(string(payload.updated_at)),
+  };
+}
+
+/** The workspace family, or the personal one when a user is named. */
+function standingContextPath(input: {
+  tenantUuid: string;
+  userUuid?: string | null;
+}): string {
+  const userUuid = input.userUuid ?? null;
+  return userUuid === null
+    ? `/v1/partner/tenants/${input.tenantUuid}/standing-context`
+    : `/v1/partner/tenants/${input.tenantUuid}/users/${userUuid}/standing-context`;
+}
+
+/** A validation error's `error.fields`: each field path and its messages. */
+function errorFields(value: unknown): Record<string, string[]> {
+  if (!isJsonObject(value)) return {};
+  const fields: Record<string, string[]> = {};
+  for (const [field, messages] of Object.entries(value)) {
+    fields[field] = Array.isArray(messages)
+      ? messages.map(String)
+      : [String(messages)];
+  }
+  return fields;
+}
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function parseJsonObject(text: string): JsonObject {

@@ -468,3 +468,74 @@ export interface ActivateTenantTopupInput {
   transactionUuid: string;
   reference?: string;
 }
+
+/** A directive (`instruction`) or a fact (`memory`). */
+export type StandingEntryKind = "instruction" | "memory";
+
+/** A retired entry is kept but never told. */
+export type StandingEntryStatus = "active" | "retired";
+
+/**
+ * One instruction or memory the assistant is told in every conversation.
+ *
+ * `scope` is `"tenant"` for a workspace entry, which every user of the tenant
+ * gets, and `"user"` for one user's personal entry.
+ *
+ * `expiresOn` is the last day the entry applies, inclusive, in UTC, as
+ * `"YYYY-MM-DD"`, and `null` for one that never expires. `expired` says that
+ * day has passed: an expired entry is still listed, but no longer told. A
+ * retired one is kept but never told, and listed only on request. So an entry
+ * applies when its `status` is `"active"` and it is not `expired`.
+ *
+ * `source` is `"api"` for an entry someone wrote through the API and `"agent"`
+ * for one the assistant saved itself, in the conversation `sourceJobUuid`
+ * names.
+ */
+export interface StandingEntry {
+  uuid: string;
+  scope: "tenant" | "user";
+  kind: StandingEntryKind;
+  body: string;
+  status: StandingEntryStatus;
+  expiresOn: string | null;
+  expired: boolean;
+  source: "api" | "agent";
+  sourceJobUuid: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * Whose standing entries a call manages: a tenant's own (the workspace's), or,
+ * with `userUuid`, one of its users' personal entries.
+ */
+export interface StandingContextOwnerInput {
+  tenantUuid: string;
+  /** Omit (or null) for the workspace's entries. */
+  userUuid?: string | null;
+}
+
+export interface ListStandingEntriesInput extends StandingContextOwnerInput {
+  /** Defaults to false: retired entries are left out. */
+  includeRetired?: boolean;
+}
+
+export interface StandingEntryInput extends StandingContextOwnerInput {
+  entryUuid: string;
+}
+
+export interface CreateStandingEntryInput extends StandingContextOwnerInput {
+  kind: StandingEntryKind;
+  body: string;
+  /** The last day it applies, `"YYYY-MM-DD"` (UTC); omit for never. */
+  expiresOn?: string | null;
+}
+
+export interface UpdateStandingEntryInput extends StandingEntryInput {
+  /** Omit to keep the text. */
+  body?: string | undefined;
+  /** `null` clears the expiry; omitted (or `undefined`) keeps it. */
+  expiresOn?: string | null | undefined;
+  /** `"retired"` stops the entry being told; `"active"` brings it back. */
+  status?: StandingEntryStatus | undefined;
+}

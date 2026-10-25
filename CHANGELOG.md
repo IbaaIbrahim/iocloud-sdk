@@ -12,8 +12,41 @@ is a 422, and a response no longer contains it. Nothing is removed: `jwksUrl`
 stays on `createIdentityProvider`, deprecated, and on `IdentityProvider`,
 derived.
 
+Standing context, for all three packages: the instructions and memories the
+platform tells the assistant in every conversation of a tenant's users, managed
+with the partner token for the whole workspace or for one of its users.
+
 ### Added
 
+- Five standing-context calls in the Python, Node and Laravel packages —
+  `list_standing_entries`, `get_standing_entry`, `create_standing_entry`,
+  `update_standing_entry` and `delete_standing_entry` in Python;
+  `listStandingEntries`, `getStandingEntry`, `createStandingEntry`,
+  `updateStandingEntry` and `deleteStandingEntry` in Node and Laravel (facade
+  included). Without a user they manage the workspace's entries,
+  `/v1/partner/tenants/{tenant_uuid}/standing-context`; with `user_uuid`
+  (`userUuid`) that user's personal ones,
+  `/v1/partner/tenants/{tenant_uuid}/users/{user_uuid}/standing-context`. The
+  listing reads every page, 100 entries a request, up to 50 pages.
+- Updates tell clearing the expiry from keeping it: `expires_on=None` clears
+  and leaving it out keeps in Python; `expiresOn: null` clears and `undefined`
+  keeps in Node; in Laravel, where a null argument means "unchanged",
+  `clearExpiresOn: true` clears, and passing it with `$expiresOn` throws
+  `InvalidArgumentException`.
+- `StandingEntry` in all three packages: `expiresOn` is a `date` in Python and
+  a `YYYY-MM-DD` string in Node and Laravel. Node also exports the
+  `StandingEntryKind` and `StandingEntryStatus` types and each call's input
+  type.
+- The API error carries the response's `error` detail: `reason` (null when
+  there is none) and `fields`, a `VALIDATION_ERROR`'s invalid fields (empty
+  when there are none) — `IOCloudAPIError.reason` and `.fields` in Python and
+  Node, `IOCloudAPIException::$reason` and `$fields` in Laravel — so a caller
+  can tell `STANDING_CONTEXT_FULL` from `STANDING_ENTRY_TOO_LONG`. Both are new
+  optional constructor arguments, keyword-only in Python, a trailing detail
+  object in Node and trailing parameters in Laravel, so existing code that
+  raises or catches the error is unaffected.
+- The OpenAPI contract describes both families, their refusals, and the
+  error's `error` object.
 - `jwksPath` on `createIdentityProvider`: `jwks_path=` in Python, the
   `jwksPath` option in Node, and in Laravel a `$jwksPath` parameter added last,
   so pass it by name. Omitted, it is `/.well-known/jwks.json`, the platform's

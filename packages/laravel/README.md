@@ -45,6 +45,82 @@ causes one token refresh and retry. API failures throw
 `IOCloudAPIException`; authentication failures throw
 `IOCloudAuthenticationException`.
 
+## Standing context
+
+Standing context is the short instructions and memories the assistant is told
+in every conversation: a workspace's, which every user of the tenant gets, and
+one user's personal entries, on top of them. Leave `userUuid` out to manage the
+workspace's; pass it to manage that user's. All five calls use the partner
+token; pass their arguments by name:
+
+```php
+use IOCloud\Laravel\Exceptions\IOCloudAPIException;
+use IOCloud\Laravel\Facades\IOCloud;
+
+$entry = IOCloud::createStandingEntry(
+    tenantUuid: $tenant->uuid,
+    kind: 'instruction',                // or 'memory'
+    body: 'Answer in formal German.',
+    expiresOn: '2026-12-31',            // optional: the last day it applies, UTC
+);
+$note = IOCloud::createStandingEntry(
+    tenantUuid: $tenant->uuid,
+    kind: 'memory',
+    body: 'Manages the Hamburg site.',
+    userUuid: $user->uuid,
+);
+
+$entries = IOCloud::listStandingEntries(tenantUuid: $tenant->uuid);
+$mine = IOCloud::listStandingEntries(
+    tenantUuid: $tenant->uuid,
+    userUuid: $user->uuid,
+    includeRetired: true,
+);
+$entry = IOCloud::getStandingEntry(tenantUuid: $tenant->uuid, entryUuid: $entry->uuid);
+
+IOCloud::updateStandingEntry(tenantUuid: $tenant->uuid, entryUuid: $entry->uuid, body: 'Answer in formal English.');
+IOCloud::updateStandingEntry(tenantUuid: $tenant->uuid, entryUuid: $entry->uuid, clearExpiresOn: true);
+IOCloud::updateStandingEntry(tenantUuid: $tenant->uuid, entryUuid: $entry->uuid, status: 'retired');
+IOCloud::deleteStandingEntry(tenantUuid: $tenant->uuid, entryUuid: $note->uuid, userUuid: $user->uuid);
+```
+
+`updateStandingEntry()` changes only what you pass, and a null argument is left
+unchanged, as in the package's other update calls. So a null `$expiresOn` keeps
+the expiry, and **clearing** it — the entry then never expires — takes
+`clearExpiresOn: true`; passing a date with it throws
+`InvalidArgumentException` before any request. `$expiresOn` takes a `'Y-m-d'`
+string or a `DateTimeInterface`, sent as its `Y-m-d` as it stands.
+
+Each result is a `StandingEntry` data object: `uuid`, `scope` (`'tenant'` or
+`'user'`), `kind`, `body`, `status` (`'active'` or `'retired'`, with
+`isActive()`), `expiresOn` (`'Y-m-d'` — a calendar day, so a string — or
+null), `expired`, `source` (`'agent'` when the assistant saved it, `'api'`
+otherwise), `sourceJobUuid`, `createdAt` and `updatedAt`. A listing includes
+expired entries, flagged `expired`, and retired ones only with
+`includeRetired: true`; it reads 100 entries a request and stops after 50
+pages.
+
+The platform enforces its limits for each owner — its active, unexpired
+instructions together at most 4,000 characters, one memory at most 300, at most
+50 active, unexpired memories — and refuses with an `IOCloudAPIException`
+whose `$reason` says why:
+
+```php
+try {
+    IOCloud::createStandingEntry(tenantUuid: $tenant->uuid, kind: 'memory', body: $text);
+} catch (IOCloudAPIException $exception) {
+    $exception->errorCode;  // 'STANDING_CONTEXT_FULL' (409) or 'STANDING_ENTRY_INVALID' (422), …
+    $exception->reason;     // e.g. 'STANDING_ENTRY_TOO_LONG'; null when the response has none
+    $exception->fields;     // a VALIDATION_ERROR's invalid fields; [] otherwise
+}
+```
+
+`STANDING_ENTRY_INVALID`'s reason is one of `STANDING_ENTRY_EMPTY`,
+`STANDING_ENTRY_TOO_LONG`, `STANDING_ENTRY_INVALID_EXPIRY` and
+`STANDING_ENTRY_NO_CHANGES`. A `404` is `STANDING_ENTRY_NOT_FOUND`,
+`TENANT_NOT_FOUND` (not one of your tenants) or `USER_NOT_FOUND` (not a user of
+that tenant). See [Standing context](../../README.md#standing-context).
+
 ## Federation: signing your users into IOCloud
 
 Federating means your application acts as a small OIDC issuer — it signs a
