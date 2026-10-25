@@ -511,12 +511,13 @@ missing trusted publisher or a wrong environment name surfaces.
 
 | Package               | Published on the registry | Setup state                                            |
 | --------------------- | ------------------------- | ------------------------------------------------------ |
-| `iocloud/laravel-sdk` | v0.3.0 through v0.6.0     | confirmed: `LARAVEL_SPLIT_TOKEN` + Packagist hook work  |
+| `iocloud/laravel-sdk` | v0.3.0 through v0.7.2     | confirmed: `LARAVEL_SPLIT_TOKEN` + Packagist hook work  |
 | `iocloud-sdk` (PyPI)  | never                     | unverified: needs the trusted publisher + `pypi` env    |
 | `@iocloud/sdk` (npm)  | never                     | unverified: needs `NPM_TOKEN` + `npm` env               |
 
-The three do not share a version counter. Laravel is published through 0.6.0, so
-its next release is 0.7.0. Python and npm were never tagged at any version,
+The three do not share a version counter. Laravel is published through 0.7.2
+(0.7.1 was skipped), so its next release is 0.7.3 or later. Python and npm were
+never tagged at any version,
 and their manifests now read 0.7.0, so `python-v0.7.0` and `node-v0.7.0` are
 their next tags; an earlier version of either could now only be cut from a
 commit before that bump. The snippets below write `0.7.0` throughout —

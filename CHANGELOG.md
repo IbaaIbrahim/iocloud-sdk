@@ -3,7 +3,11 @@
 All notable SDK changes are documented here. Each ecosystem can be released
 independently, so entries identify the affected packages.
 
-## Unreleased
+## 0.7.2 - 2026-10-25
+
+Released for Laravel only: `laravel-v0.7.2`, `v0.7.2` on Packagist (there is
+no 0.7.1). Python and npm are still unpublished, so their first release carries
+these changes too.
 
 Identity providers register and read back `jwks_path`, for all three packages.
 The platform stores where it fetches an issuer's keys as `jwks_path`, a path on
