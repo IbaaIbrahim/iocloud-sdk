@@ -44,6 +44,15 @@ All clients implement:
   response's `code` and, when it has one, its `error.reason` and
   `error.fields`.
 
+Every `tenant_uuid` / `user_uuid` argument of a partner-token call (`tenantUuid` /
+`userUuid` in Node and Laravel) may be your own id for that tenant or user — the
+`external_id` you gave it — as well as the platform's uuid; the platform tries
+your id first, and answers `409 TENANT_REFERENCE_AMBIGUOUS` for an id tenants of
+two of your applications share (AI-EcoSystem ADR-022). Name a tenant whose id
+contains `/`, `?`, `#`, `%` or a space by its uuid: the packages put the value
+into the path as given. Tenant-credential calls such as `update_user_status`
+take the platform's uuid.
+
 ## Putting a tenant on a plan
 
 Your tenants are your clients: they pay *you*, never the platform. So the

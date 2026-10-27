@@ -3,6 +3,36 @@
 All notable SDK changes are documented here. Each ecosystem can be released
 independently, so entries identify the affected packages.
 
+## Unreleased
+
+Documentation only, for all three packages: no code changed. The platform now
+takes your own ids wherever a partner-token call names a tenant or a user
+(AI-EcoSystem ADR-022, 2026-10-26), and the packages already send the value as
+the string you pass.
+
+### Changed
+
+- Every `tenant_uuid` / `user_uuid` argument of a partner-token call
+  (`tenantUuid` / `userUuid` in Node and Laravel) may be the `external_id` you
+  gave that tenant or user instead of the platform's uuid: the standing-context
+  calls, `create_tenant_credentials`, `set_tenant_external_id` (by the tenant's
+  current id), `subscribe_tenant` and `grant_tenant_topup`. The platform tries
+  your id first. Responses still carry the platform's uuids. Calls made with a
+  tenant credential, such as `update_user_status`, still take the platform's
+  user uuid.
+- Two refusals to expect: `409 TENANT_REFERENCE_AMBIGUOUS` when tenants of two
+  of your applications carry the same id, which the tenant's platform uuid
+  settles, and `404 TENANT_NOT_FOUND` for another partner's tenant, which
+  `create_tenant_credentials` and `set_tenant_external_id` answered with a
+  `403` before.
+- A path segment cannot carry an id containing `/`, and the packages do not
+  yet percent-encode `?`, `#`, `%` or a space in one: name such a tenant by its
+  uuid.
+- The README says so, and the OpenAPI contract's partner `tenant_uuid` and
+  `user_uuid` path parameters and the `tenant_uuid` of `SubscribeTenantRequest`
+  and `GrantTenantTopupRequest` are strings of 1 to 255 characters, no longer
+  uuids.
+
 ## 0.7.2 - 2026-10-25
 
 Released for Laravel only: `laravel-v0.7.2`, `v0.7.2` on Packagist (there is
